@@ -1,0 +1,10 @@
+export type Provider='codex'|'claude';
+export type InstallContext={installRoot:string;home:string;nodeExe:string;sourceRoot:string};
+export type SourceRef={provider:Provider;sessionId:string};
+export type Candidate=SourceRef&{workspaceRoot:string;title?:string;lastActiveAt?:string;availability:'candidate'|'live_endpoint'};
+export type ConnectionPhase='selected'|'awaiting_native_trust'|'probing'|'ready'|'offline'|'needs_check'|'disconnected';
+export type ConnectionRecord={schemaVersion:1;connectionId:string;phase:ConnectionPhase;codex:Candidate;claude:Candidate;probeWireVersion?:'legacy'|'clean-v1';probeIds:{forward:string;reverse:string};createdAt:string;probeDeadlineAt:string;errorCode?:string};
+export type Health={instanceId:string;pid:number;stateRoot:string;status:string;lifecycle:unknown};
+export type ServiceHandle={instanceId:string;pid:number;stateRoot:string};
+export type FileChange={target:string;beforeSha256:string|null;afterSha256:string|null;kind:'hook'|'skill'|'path'|'runtime'};
+export type SetupPlan={schemaVersion:1;operationId:string;changes:FileChange[];status:'preview'|'applying'|'applied'|'needs_check'|'rolled_back'};

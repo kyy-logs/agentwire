@@ -1,0 +1,2 @@
+import readline from 'node:readline';
+for await(const line of readline.createInterface({input:process.stdin})){const q=JSON.parse(line);if(q.method==='initialized')continue;if(q.params?.silent)continue;const value=q.params?.large?'x'.repeat(2000):q.params;const reply=q.params?.error?{id:q.id,error:{code:42,message:'not echoed'}}:{id:q.id,result:q.method==='initialize'?{}:value};const text=JSON.stringify(reply)+'\n';setTimeout(()=>{const mid=Math.floor(text.length/2);process.stdout.write(text.slice(0,mid));process.stdout.write(text.slice(mid));},q.params?.delay||0);}

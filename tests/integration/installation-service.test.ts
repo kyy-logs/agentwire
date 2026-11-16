@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdir,readFile,writeFile} from 'node:fs/promises';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {randomUUID} from 'node:crypto';
+import {temp} from '../helpers.ts';
+import {startMain} from '../../src/main.ts';
+import {requestBus} from '../../src/ipc.ts';
+import {ensureService,serviceHealth,shutdownService} from '../../src/installation/service.ts';
+import {previewSetup,applySetup} from '../../src/installation/setup.ts';
+test('shutdown_ack_is_received_before_transport_close; wrong instance rejected; old health fields retained',async t=>{const root=await temp(t);const main=await startMain(root,{quiet:true});t.after(()=>main.close());const h=await serviceHealth(root);assert.equal(h.pid,process.pid);assert.equal(h.stateRoot,root);assert.ok(h.instanceId);const bad=await requestBus(root,{requestId:randomUUID(),op:'shutdown',payload:{instanceId:randomUUID()}});assert.equal(bad.ok,false);assert.equal((await serviceHealth(root)).instanceId,h.instanceId);const ack=await requestBus(root,{requestId:randomUUID(),op:'shutdown',payload:{instanceId:h.instanceId}});assert.equal(ack.ok,true);assert.equal(ack.data.status,'closing');});
+test('two_starters_get_one_consumer; shutdown actually exits; no runtime overwrite while active',async t=>{const root=await temp(t),c={installRoot:path.join(root,'install'),home:path.join(root,'home'),nodeExe:process.execPath,sourceRoot:fileURLToPath(new URL('../../',import.meta.url))};await mkdir(c.home);const p=await previewSetup(c);await applySetup(c,p.operationId);const state=path.join(c.installRoot,'connections',randomUUID(),'state');await mkdir(path.dirname(state),{recursive:true});await writeFile(path.join(path.dirname(state),'connection.json'),JSON.stringify({schemaVersion:1,connectionId:path.basename(path.dirname(state))}));let handle:any;t.after(async()=>{if(handle)await shutdownService(handle);});const handles=await Promise.all([ensureService(c,state),ensureService(c,state)]);handle=handles[0];assert.equal(handles[0].instanceId,handles[1].instanceId);assert.equal((await serviceHealth(state)).pid,handle.pid);assert.ok(await readFile(path.join(c.installRoot,'install','runtime-active.json')));assert.equal((await shutdownService(handle)).status,'closed');handle=undefined;await assert.rejects(serviceHealth(state));});
+test('wrong_state_or_instance_not_accepted; reused_pid_never_killed',async t=>{const root=await temp(t);const main=await startMain(root,{quiet:true});t.after(()=>main.close());const h=await serviceHealth(root);assert.equal((await shutdownService({...h,instanceId:randomUUID()})).status,'needs_check');assert.equal((await serviceHealth(root)).instanceId,h.instanceId);assert.equal((await shutdownService({...h,stateRoot:path.join(root,'other')})).status,'needs_check');});

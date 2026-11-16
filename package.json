@@ -1,0 +1,14 @@
+{
+  "name": "agentwire",
+  "version": "0.1.0",
+  "description": "Local, bidirectional collaboration between existing Codex Desktop and Claude Code chats on Windows",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "repository": {"type": "git", "url": "https://github.com/kyy-logs/agentwire.git"},
+  "engines": {"node": ">=24"},
+  "scripts": {
+    "test": "node --experimental-strip-types --test --test-concurrency=1 tests/unit/*.test.ts tests/integration/*.test.ts",
+    "start": "node --experimental-strip-types src/cli.ts start"
+  }
+}
