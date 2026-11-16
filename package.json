@@ -1,6 +1,6 @@
 {
   "name": "agentwire",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local, bidirectional collaboration between existing Codex Desktop and Claude Code chats on Windows",
   "private": true,
   "license": "MIT",

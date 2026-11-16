@@ -3,6 +3,15 @@ import {execFile} from 'node:child_process';import {promisify} from 'node:util';
 import {assertId} from '../model.ts';import {hash,optional,safePath,atomicBytes,jsonBytes,resolveLayout,withInstallLock} from './paths.ts';import type {InstallContext,SetupPlan,Provider} from './model.ts';
 export type PathStore={get:()=>Promise<string>;set:(value:string)=>Promise<void>};
 type Options={pathStore?:PathStore;afterWrite?:()=>Promise<void>};
+async function setConfirmedPath(store:PathStore,value:string):Promise<void>{
+ // Windows can persist PATH before its environment-change notification hangs.
+ // Observe the desired state before recording ownership or finishing rollback.
+ let failed=false,failure:unknown;
+ try{await store.set(value);}catch(error){failed=true;failure=error;}
+ let actual:string;
+ try{actual=await store.get();}catch(error){if(failed)throw failure;throw error;}
+ if(actual!==value){if(failed)throw failure;throw Error('path_write_unconfirmed');}
+}
 type Entry={target:string;kind:'hook'|'skill'|'path';before:string|null;after:string;originalFile:string;stagedFile:string;groups?:Record<string,unknown[]>};
 type Operation=SetupPlan&{entries:Entry[];appliedTargets:string[];rolledBackTargets:string[]};
 const same=(a:unknown,b:unknown)=>JSON.stringify(a)===JSON.stringify(b);
@@ -34,7 +43,7 @@ async function applyConfigurationOne(c:InstallContext,id:string,options:Options=
  // Check every target before any side effect; resumption accepts only own staged bytes.
  for(const e of op.entries){const bytes=await readFile(e.stagedFile);if(hash(bytes)!==e.after)throw Error('staging_hash_mismatch');const actual=await read(e),h=actual?hash(actual):null;if(h!==e.before&&h!==e.after)throw Error('configuration_changed');}
  op.status='applying';await save(c,op);
- for(const e of op.entries){const current=await read(e),h=current?hash(current):null;if(h!==e.before&&h!==e.after)throw Error('configuration_changed_during_apply');if(h!==e.after){if(e.kind==='path')await pathStore.set((await readFile(e.stagedFile)).toString());else await atomicBytes(e.target,await readFile(e.stagedFile));}
+ for(const e of op.entries){const current=await read(e),h=current?hash(current):null;if(h!==e.before&&h!==e.after)throw Error('configuration_changed_during_apply');if(h!==e.after){if(e.kind==='path')await setConfirmedPath(pathStore,(await readFile(e.stagedFile)).toString());else await atomicBytes(e.target,await readFile(e.stagedFile));}
  owner.targets[e.target]={after:e.after,operationId:id};await atomicBytes(path.join(resolveLayout(c).install,'configuration-owner.json'),jsonBytes(owner));if(!op.appliedTargets.includes(e.target))op.appliedTargets.push(e.target);await save(c,op);await options.afterWrite?.();}
  op.status='applied';await save(c,op);return op;
 }
@@ -50,7 +59,7 @@ async function rollbackConfigurationOne(c:InstallContext,id:string,options:Optio
  else if(e.kind==='path'){const bin=resolveLayout(c).bin;restore=Buffer.from((current?.toString()||'').split(';').filter(x=>!x||path.resolve(x).toLowerCase()!==bin.toLowerCase()).join(';'));}
  else if(e.kind==='hook'&&current){const value=JSON.parse(current.toString());for(const [event,groups] of Object.entries(e.groups||{})){const actual=value.hooks?.[event];if(!Array.isArray(actual))throw Error('hook_changed_requires_review');for(const group of groups){const matches=actual.map((x:any,i:number)=>same(x,group)?i:-1).filter((i:number)=>i>=0);if(matches.length!==1)throw Error('hook_changed_requires_review');actual.splice(matches[0],1);}if(!actual.length)delete value.hooks[event];}restore=jsonBytes(value);}
  else throw Error('owned_file_changed_requires_review');actions.push({entry:e,current,restore});}
- for(const {entry:e,current,restore} of actions){const latest=e.kind==='path'?Buffer.from(await pathStore.get()):await optional(e.target);if((latest?hash(latest):null)!==(current?hash(current):null))throw Error('configuration_changed_during_rollback');if(e.kind==='path')await pathStore.set(restore?.toString()||'');else if(restore)await atomicBytes(e.target,restore);else if(latest)await unlink(e.target);delete owner.targets[e.target];await atomicBytes(path.join(resolveLayout(c).install,'configuration-owner.json'),jsonBytes(owner));op.rolledBackTargets.push(e.target);await save(c,op);}
+ for(const {entry:e,current,restore} of actions){const latest=e.kind==='path'?Buffer.from(await pathStore.get()):await optional(e.target);if((latest?hash(latest):null)!==(current?hash(current):null))throw Error('configuration_changed_during_rollback');if(e.kind==='path')await setConfirmedPath(pathStore,restore?.toString()||'');else if(restore)await atomicBytes(e.target,restore);else if(latest)await unlink(e.target);delete owner.targets[e.target];await atomicBytes(path.join(resolveLayout(c).install,'configuration-owner.json'),jsonBytes(owner));op.rolledBackTargets.push(e.target);await save(c,op);}
  op.status='rolled_back';await save(c,op);return op;
 }
 

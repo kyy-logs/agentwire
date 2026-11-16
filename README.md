@@ -2,7 +2,7 @@
 
 **让已经打开的 Codex Desktop 与 Claude Code 聊天互相委派任务，结果自动回到原窗口。**
 
-Local, bidirectional collaboration between existing Codex Desktop and Claude Code chats. Windows preview · v0.1.0 · MIT.
+Local, bidirectional collaboration between existing Codex Desktop and Claude Code chats. Windows preview · v0.1.1 · MIT.
 
 在 Codex 中说「让 Claude 只读审查当前修改」，或在 Claude 中说「让 Codex 分析这个问题」。双方保留独立上下文和现有登录，不用复制完整聊天，也不用让模型记住消息编号、执行回信命令。
 
@@ -12,7 +12,7 @@ Local, bidirectional collaboration between existing Codex Desktop and Claude Cod
 
 准备好 **Node.js 24 或更新版本**，并在本机安装、登录 Codex Desktop 和 Claude Code。
 
-下载 [v0.1.0 Windows 安装包](https://github.com/kyy-logs/agentwire/releases/tag/v0.1.0)，解压后在目录中运行：
+下载 [v0.1.1 Windows 安装包](https://github.com/kyy-logs/agentwire/releases/tag/v0.1.1)，解压后在目录中运行：
 
 ```powershell
 powershell -NoProfile -File .\install.ps1
@@ -88,6 +88,7 @@ npm test
 目录：`src/` 核心代码，`assets/skills/` 两端入口，`tests/` 单元与集成测试，`scripts/` 发布打包工具。
 
 - [安装与连接](docs/INSTALL.md)
+- [0.1.1 安装流程实测与限制](docs/INSTALL-CHECK.md)
 - [日常使用](docs/USAGE.md)
 - [架构与可靠性](docs/IMPLEMENTATION-NOTES.md)
 - [Hook 与自动回传](docs/HOOKS.md)

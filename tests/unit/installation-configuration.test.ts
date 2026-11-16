@@ -1,6 +1,31 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';import path from 'node:path';import {temp} from '../helpers.ts';
 import {previewConfiguration,applyConfiguration,rollbackConfiguration} from '../../src/installation/configuration.ts';
+test('PATH write committed before timeout finishes install ownership and uninstall restores original',async t=>{
+ const {c,pathStore}=await fixture(t);const original=await pathStore.get(),set=pathStore.set;
+ pathStore.set=async value=>{await set(value);throw Object.assign(Error('setter timed out after committing'),{code:null,signal:'SIGTERM',killed:true});};
+ const plan=await previewConfiguration(c,{pathStore});await applyConfiguration(c,plan.operationId,{pathStore});
+ const owner=JSON.parse(await readFile(path.join(c.installRoot,'install','configuration-owner.json'),'utf8'));
+ assert.equal(owner.targets['user:PATH'].operationId,plan.operationId);
+ assert.equal(JSON.parse(await readFile(path.join(c.installRoot,'install','configuration',plan.operationId,'operation.json'),'utf8')).status,'applied');
+ await rollbackConfiguration(c,plan.operationId,{pathStore});assert.equal(await pathStore.get(),original);
+ assert.equal(JSON.parse(await readFile(path.join(c.installRoot,'install','configuration',plan.operationId,'operation.json'),'utf8')).status,'rolled_back');
+});
+test('PATH setter timeout without a committed value remains a failure and cannot claim ownership',async t=>{
+ const {c,pathStore}=await fixture(t),error=Error('setter did not write'),original=await pathStore.get();pathStore.set=async()=>{throw error;};
+ const plan=await previewConfiguration(c,{pathStore});await assert.rejects(applyConfiguration(c,plan.operationId,{pathStore}),e=>e===error);
+ assert.equal(await pathStore.get(),original);const owner=JSON.parse(await readFile(path.join(c.installRoot,'install','configuration-owner.json'),'utf8'));assert.equal(owner.targets['user:PATH'],undefined);
+});
+test('PATH write cannot be confirmed when another value is observed after a timeout',async t=>{
+ const {c,pathStore}=await fixture(t),set=pathStore.set,error=Error('setter result uncertain');pathStore.set=async()=>{await set('C:\\other-writer');throw error;};
+ const plan=await previewConfiguration(c,{pathStore});await assert.rejects(applyConfiguration(c,plan.operationId,{pathStore}),e=>e===error);assert.equal(await pathStore.get(),'C:\\other-writer');
+ const owner=JSON.parse(await readFile(path.join(c.installRoot,'install','configuration-owner.json'),'utf8'));assert.equal(owner.targets['user:PATH'],undefined);
+});
+test('PATH setter success without the desired persisted value must not complete installation',async t=>{
+ const {c,pathStore}=await fixture(t);pathStore.set=async()=>{};const plan=await previewConfiguration(c,{pathStore});
+ await assert.rejects(applyConfiguration(c,plan.operationId,{pathStore}),/path_write_unconfirmed/);
+ const owner=JSON.parse(await readFile(path.join(c.installRoot,'install','configuration-owner.json'),'utf8'));assert.equal(owner.targets['user:PATH'],undefined);
+});
 async function fixture(t:any){const root=await temp(t),c={home:path.join(root,'home'),installRoot:path.join(root,'产品'),sourceRoot:path.join(root,'source'),nodeExe:process.execPath};for(const p of ['codex','claude']){const d=path.join(c.sourceRoot,'assets','skills',p,'labus');await mkdir(d,{recursive:true});await writeFile(path.join(d,'SKILL.md'),'---\nname: labus\ndescription: test\n---\n{{LAUNCHER}}');}await mkdir(path.join(c.home,'.claude'),{recursive:true});const original='{"permissions":{"test":true},"hooks":{"PreToolUse":[]}}\n';await writeFile(path.join(c.home,'.claude','settings.json'),original);let value='C:\\existing';const pathStore={get:async()=>value,set:async(v:string)=>{value=v;}};return {c,original,pathStore};}
 test('preserves_original_hooks_permissions; preview does not change configs; second_apply does not duplicate',async t=>{const {c,original,pathStore}=await fixture(t);const p=await previewConfiguration(c,{pathStore});assert.equal(await readFile(path.join(c.home,'.claude','settings.json'),'utf8'),original);await applyConfiguration(c,p.operationId,{pathStore});const saved=JSON.parse(await readFile(path.join(c.home,'.claude','settings.json'),'utf8'));assert.deepEqual(saved.permissions,{test:true});assert.equal(saved.hooks.Stop.length,1);await applyConfiguration(c,p.operationId,{pathStore});assert.equal((await previewConfiguration(c,{pathStore})).changes.length,0);});
 test('concurrent_edit_rejected_before_apply; skill_name_conflict_preserved',async t=>{const {c,pathStore}=await fixture(t);const p=await previewConfiguration(c,{pathStore});await writeFile(path.join(c.home,'.claude','settings.json'),'{}');await assert.rejects(applyConfiguration(c,p.operationId,{pathStore}),/configuration_changed/);const d=path.join(c.home,'.agents','skills','labus');await mkdir(d,{recursive:true});await writeFile(path.join(d,'SKILL.md'),'foreign');await assert.rejects(previewConfiguration(c,{pathStore}),/skill_name_conflict/);});

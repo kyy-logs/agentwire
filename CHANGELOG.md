@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1 — 2026-11-16
+
+- Fix a real Windows installation failure: the PATH setter could persist its value but exceed the five-second process timeout before ownership was recorded.
+- Confirm the persisted user PATH after both install and rollback writes. A timed-out setter is accepted only when a fresh read exactly matches the desired value; missing or conflicting writes still fail.
+- Add four regression cases for committed timeouts, uncommitted timeouts, conflicting values, and a successful setter that did not persist the desired value.
+- Full local offline regression: 184/184. Native chat compatibility remains the same as 0.1.0.
+
 ## 0.1.0 — 2026-11-16
 
 First AgentWire Windows preview, based on the locally validated clean-v1-r4 implementation.

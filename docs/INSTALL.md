@@ -1,6 +1,6 @@
 # Windows 安装、连接与卸载
 
-AgentWire v0.1.0 是 Windows 技术预览；已验证组合及未覆盖场景见[验收边界](CLEAN-MESSAGES-ACCEPTANCE.md)。
+AgentWire v0.1.1 是 Windows 技术预览；已验证组合及未覆盖场景见[验收边界](CLEAN-MESSAGES-ACCEPTANCE.md)。0.1.0 在真实脚本安装中暴露 PATH 写后超时问题，建议使用 0.1.1。
 
 ## 环境要求
 
@@ -12,7 +12,7 @@ AgentWire v0.1.0 是 Windows 技术预览；已验证组合及未覆盖场景见
 
 ## 安装步骤
 
-从 GitHub Release 下载 `agentwire-0.1.0-windows.zip` 并解压，或克隆源码，然后运行：
+从 GitHub Release 下载 `agentwire-0.1.1-windows.zip` 并解压，或克隆源码，然后运行：
 
 ```powershell
 powershell -NoProfile -File .\install.ps1
@@ -58,6 +58,8 @@ labus doctor
 检查连接状态、未完成任务、原生信任和对方窗口。`needs_check` 表示需核对，不代表业务失败或可安全重做。离线任务只有有限重试与期限，不是无限期邮箱。不要删除历史或换新编号盲重发。
 
 后台 Bus 隐藏运行，无开机自启；重连使用同一状态。发现运行时正被使用时，安装器拒绝覆盖。更新前先正常结束/处理在途任务并断开，不杀原生 Agent。旧原型的固定会话 Hook 必须先精确撤销，不能新旧消费者同时接管。
+
+Windows 的 PATH 通知可能晚于注册表写入。0.1.1 在设置进程结束或超时后重新读取用户 PATH，只有精确等于目标值才登记安装/撤销成功。终端环境未刷新时，可先使用 `%LOCALAPPDATA%\LocalAgentBus\bin\labus.cmd` 的绝对路径，或在刷新环境后重开终端；两端 Skill 使用绝对路径，不依赖 PATH 通知。
 
 ## 断开和卸载
 

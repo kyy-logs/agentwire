@@ -41,7 +41,7 @@ Codex 使用桌面捆绑的 Codex App Server stdio 与实验能力，包含 `thr
 
 ## 首版命名兼容
 
-产品和仓库名为 AgentWire，包版本 0.1.0。CLI/Skill 的 `labus`、`LocalAgentBus` 数据目录以及旧内部协议命名保留，避免破坏已有配置、状态和稳定派生 ID。不是将内部协议字符串全部替换成产品名。
+产品和仓库名为 AgentWire，当前包版本 0.1.1。CLI/Skill 的 `labus`、`LocalAgentBus` 数据目录以及旧内部协议命名保留，避免破坏已有配置、状态和稳定派生 ID。不是将内部协议字符串全部替换成产品名。
 
 ## 扩展边界
 
