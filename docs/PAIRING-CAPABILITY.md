@@ -1,10 +1,12 @@
 # 配对原生能力：P0 阶段报告
 
-日期：2026-11-17。状态：P0 原生能力已有实证，但仍未全部通过；子 Agent 原生负例被 Claude 自动审批的模型不可用错误阻止。仅按计划中记录的执行顺序例外完成 Task 2 纯读取核验代码，持久配对、路由与安装仍未实施。
+日期：2026-11-17。状态：原 Claude 的子 Agent 创建与原生回传已现场验证通过，当前版本为 2.1.318，原聊天与进程身份均未改变。完整配对 P0 和连接码产品仍未全部完成；Task 2 的只读核验已完成，持久配对、路由与安装仍未实施。
 
-最新自主处理结果：子 Agent 独立有界复测仍得到一次相同的自动审批模型不可用错误，随后停止，不改权限、不重放旧请求。本机已配置代理的只读健康与模型列表接口均 HTTP 200；这不证明其分类模型可用，也未据此修改代理或模型配置。
+此前“自动审批模型不可用”是表面错误。后续在实际 CC Switch 3.16.2 / DeepSeek 链路复现：非流式响应含 zstd 压缩正文，却丢失 Content-Encoding，导致 Claude Code 分类请求 SyntaxError。相同常量请求仅改变压缩协商即可复现/消除错误；压缩正文解码后是有效 DeepSeek JSON。与该版本源码一致：未知编码返回 Ok(raw)，随后被当成已解码而删除编码头。证据不再支持“等待模型服务恢复”作为这次故障的处理方向。
 
-已有真实子 Agent 元数据可用于隔离分支回放：Codex 样本版本与本机一致，来源为 subagent；Claude 样本为 2.1.268，isSidechain=true，明确不是当前 2.1.318 的现场样本。以该元数据替换四类固定控制正文均拒绝，仅声明元数据回放通过，仍不提升当前子 Agent 原生验收。
+用户在审阅具体请求头修复后要求继续验证。先备份当前配置、核对无外部变化，仅追加 env.ANTHROPIC_CUSTOM_HEADERS=Accept-Encoding: identity，保留模型、权限与 Hook。原进程随即实际执行一次 Agent 调用；新子聊天原生 isSidechain=true、含 agentId，版本为 2.1.318。子 Agent 通过原生 SubagentHandback 返回精确测试口令，工具结果确认送达，父聊天收到同一子 Agent 的完成通知。没有业务工具调用；SubagentHandback 是原生生命周期工具，不将其误报为“零工具调用”。配对来源原型对该真实子聊天记录仍拒绝，原因是 input_not_unique：原生同 promptId 含任务与生命周期提醒两个纯文本 user 记录，未伪造人类输入或改写原生元数据以制造通过。
+
+私有证据为 CCSWITCH-VALIDATION.md、ccswitch-header-activation.json 与 claude-child-after-compression-fix-evidence.json。诊断转发器已退出，不新增常驻服务、不修改 CC Switch 数据库、不关闭自动审批、不改变现有 Bus 连接。源码对照：[CC Switch 3.16.2 response_processor](https://github.com/farion1231/cc-switch/blob/v3.16.2/src-tauri/src/proxy/response_processor.rs#L38)。
 
 新增产品代码只含 `src/pairing/model.ts` 和 `capture.ts`，尚未接入任何现有入口。正式句式解析、两端原生来源/输入/cwd 精确匹配、120秒原生时间期限、受限路径和最近8MiB证据窗口均为只读操作；证据缺失或迟于 Hook 尚未写入时返回未验证，不在 Hook 内等待。新增 15 项测试先观察 RED 再 GREEN；完整离线回归 `npm test` 在普通隔离临时目录 exit 0，199 pass / 0 fail / 0 skipped。先前沙箱目录运行因多处 rename EPERM 失败，原始失败日志另存，不计为通过；普通目录复跑实际覆盖 junction 拒绝用例。尚未进行新代码的当前原窗口正式句式验收，不宣称“生成连接码”已可使用。
 
@@ -18,18 +20,18 @@
 | Claude peer 相同口令 | 精确 transport uuid / promptId 为 peer；持久正文有厂商包装，Hook Hash 对应原始提交口令 | 能区分于 human；临时证据核验器拒绝 |
 | Codex 工具输出相同口令 | 实际工具输出与前后事件集合 | 未新增发码 Hook 事件 |
 | Claude 工具输出相同口令 | Bash 工具结果 is_error=false、输出 trim 后精确相等；未新增发码 Hook 事件 | 原生工具输出负例完成 |
-| 子 Agent 相同口令 | Claude 实际 Agent 工具两次返回相同自动审批错误，未执行子 Agent | 原生验收未通过；离线拒绝分支不替代此项 |
+| 子 Agent 来源与回传 | 修复传输后，当前版本原窗口实际创建子 Agent；sidechain/agentId 明确，原生回传和父完成通知一致；原型拒绝该输入 | 新版真实样本与执行/回传已验证；不把它扩大成正式句式的全部负例或完整配对通过 |
 | 同标题不同聊天 | 既有新会话 ID 与原聊天不同；错身份离线用例拒绝 | 正式产品的同标题配对还需原窗口验收 |
 
 临时来源核验原型先观察到 RED（4 pass / 1 fail），实现后 5/5；随后真实 Claude 数据揭示工具续行共享 promptId，新增该边界先 RED（5 pass / 1 fail），排除 tool_result 后 6/6。原生记录矩阵 6/6：双方人工发码与兑换允许核验，双方 peer/queue 口令拒绝。探针自身的限范围/隐私自检另有 6/6。这些均为私有 P0 原型和调查结果，不是产品模块、正式授权或全量安装验收。
 
-自动审批原始原因：`claude-opus-4-8 is temporarily unavailable, so auto mode cannot determine the safety of Agent right now.` 请求本来只要求一次子 Agent 测试，Claude 自行又尝试一次，均返回错误；本端未再次提交请求、不继续重试，不调整权限或绕过分类。Agent 未执行，不能报告子 Agent 负例成功。
+历史表面报错（后续已定位并修复传输缺陷）：`claude-opus-4-8 is temporarily unavailable, so auto mode cannot determine the safety of Agent right now.` 请求本来只要求一次子 Agent 测试，Claude 自行又尝试一次，均返回错误；本端未再次提交请求、不继续重试，不调整权限或绕过分类。当时 Agent 未执行，不能把当时的失败算作子 Agent 负例成功；修复后的最新现场结果见本报告顶部。
 
 另有必须解决的时序事实：Codex Hook 捕获发生在完整 user 输入持久记录之前，间隔约 0.589 秒。队列负例的 at-Hook 快照能读到精确 task_started/queue，但 matchingInputRecords=0。不能按原计划假定 Hook 内始终能完成输入 Hash 复核；实际发码/兑换动作必须在完整原生输入可验证之后才准入，证据未齐时保持未授权。此项接口调整仍待后续任务实现，未把未验证请求提升为 PairIntent。
 
 当前未创建任何持久配对产品模块，未激活产品安装，未改变 Bus 连接；两端诊断 ACK 不是一次性连接码。一次性 Codex 观察器已完成并发送唯一续行通知，不继续运行或重复投递。
 
-本报告对应 `docs/superpowers/plans/2026-11-17-pairing-codes-plan.md` Task 1。产品基线 0.1.1；隔离工作区起点 `4b21331`。已按用户对具体增量的授权追加临时诊断 Hook，已备份并核对；当前运行时与活动连接未修改。
+本报告对应 `docs/superpowers/plans/2026-11-17-pairing-codes-plan.md` Task 1。产品基线 0.1.1；隔离工作区起点 `4b21331`。已按用户对具体增量的授权追加临时诊断 Hook，已备份并核对；未更新产品运行时或活动连接；用户配置增量仅含已授权的临时诊断 Hook 与上述传输请求头修复。
 
 ## 已执行
 
