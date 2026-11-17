@@ -119,3 +119,20 @@ Codex 补充诊断：按 cwd 查询的 hooks/list 显示探针 enabled=true、tr
 - 仓库 `src/installation/source.ts:readCallerSource`、`src/installation/hook-router.ts:routeHook`、`src/native/{codex,claude}-evidence.ts`：当前实现的身份读取、已配对路由过滤和原生证据机制。
 
 公开报告不包含真实会话 ID、本机路径、随机诊断凭据或原始聊天。
+# Offline implementation progress
+
+The isolated branch now has an uninstalled JSON invitation/claim ledger. It uses
+the existing connection lock and atomic writes, unbiased eight-character codes,
+five-minute invitations and two-minute first-use intents. Duplicate operations
+retain the same result; only one redeemer claims a code. Terminal families are
+retained for 24 hours, while unfinished or uncertain activation is preserved.
+Activation records include `terminalAt` so retention starts at completion rather
+than at creation. This store does not start services or change connections.
+
+The store's 15 tests and the existing capture/router tests pass (32 total).
+This is offline component evidence, not certification of new-chat pairing.
+Hook routing and the CLI are not wired to the store yet. Codex requires a
+non-authoritative request stage because native input may be written only after
+UserPromptSubmit returns; native evidence must still be verified before an
+operation becomes an authoritative intent. Full native acceptance remains open.
+
