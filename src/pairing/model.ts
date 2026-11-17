@@ -2,6 +2,9 @@ import type {Candidate,Provider} from '../installation/model.ts';
 import type {ensureService} from '../installation/service.ts';
 
 export type PairCommand={kind:'issue'}|{kind:'redeem';target:Provider;code:string};
+export type PairEvent={hook_event_name:'UserPromptSubmit';session_id:string;turn_id?:string;prompt_id?:string;prompt:string;cwd:string;transcript_path:string};
+/** A request ticket is correlation data, never native authority. */
+export type PairRequest={requestId:string;provider:Provider;event:PairEvent;observedAt:string;expiresAt:string;intentId?:string};
 export type PairIntent={
  intentId:string;source:Candidate;nativeInputId:string;command:PairCommand;
  capturedAt:string;expiresAt:string;proofRef:string;
@@ -16,5 +19,5 @@ export type PairActivation={
 export type Invitation=PairIssue&{
  issueIntentId:string;state:'available'|'revoked'|'claimed';activationId?:string;terminalAt?:string;
 };
-export type PairState={schemaVersion:1;intents:PairIntent[];invitations:Invitation[];activations:PairActivation[]};
+export type PairState={schemaVersion:1;requests:PairRequest[];intents:PairIntent[];invitations:Invitation[];activations:PairActivation[]};
 export type PairTransaction={state:PairState;commit():Promise<void>};

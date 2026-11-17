@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {assertId} from '../model.ts';
 import {safePath,hash} from '../installation/paths.ts';
 import type {InstallContext,Provider} from '../installation/model.ts';
-import type {PairCommand,PairIntent,PairDeps} from './model.ts';
+import type {PairCommand,PairIntent,PairDeps,PairEvent} from './model.ts';
 
 const HOOK_LIMIT=1048576,TAIL_LIMIT=8388608,LINE_LIMIT=2097152,INTENT_MS=120000;
 export function parsePairCommand(text:string):PairCommand|undefined{
@@ -17,6 +17,23 @@ export function parsePairCommand(text:string):PairCommand|undefined{
 }
 
 function nativePath(file:string){return /^\\\\\?\\[A-Za-z]:\\/.test(file)?file.slice(4):file;}
+/** Syntax/shape only. This does not prove human origin or read native records. */
+export function normalizePairEvent(provider:Provider,event:unknown):PairEvent|undefined{
+ try{
+ if(!['codex','claude'].includes(provider))return;let e:any=event;
+ if(event instanceof Uint8Array){if(event.byteLength>HOOK_LIMIT)return;e=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(event));}
+ if(!e||typeof e!=='object'||e.hook_event_name!=='UserPromptSubmit'||typeof e.prompt!=='string'||Buffer.byteLength(JSON.stringify(e))>HOOK_LIMIT||!parsePairCommand(e.prompt))return;
+ const inputId=provider==='codex'?e.turn_id:e.prompt_id;assertId(e.session_id);assertId(inputId);
+ if(e.is_sidechain===true||e.agent_id||e.agent_type||typeof e.cwd!=='string'||!path.isAbsolute(e.cwd)||typeof e.transcript_path!=='string')return;
+ const file=nativePath(e.transcript_path);if(!path.isAbsolute(file)||!file.endsWith('.jsonl'))return;
+ if(provider==='claude'&&path.basename(file)!==e.session_id+'.jsonl')return;
+ return {hook_event_name:'UserPromptSubmit',session_id:e.session_id,...(provider==='codex'?{turn_id:inputId}:{prompt_id:inputId}),prompt:e.prompt,cwd:e.cwd,transcript_path:file};
+ }catch{return undefined;}
+}
+export async function readPairEvent(c:InstallContext,provider:Provider,event:unknown):Promise<PairEvent|undefined>{
+ const e=normalizePairEvent(provider,event);if(!e)return;
+ try{await safePath(path.join(c.home,provider==='codex'?'.codex':'.claude',provider==='codex'?'sessions':'projects'),e.transcript_path);return e;}catch{return undefined;}
+}
 function samePath(a:unknown,b:string){return typeof a==='string'&&path.isAbsolute(a)&&path.relative(path.resolve(nativePath(a)),path.resolve(nativePath(b)))==='';}
 function plainText(r:any):string|undefined{
  const value=r.message?.content;
@@ -81,19 +98,8 @@ function intentId(provider:Provider,sessionId:string,inputId:string,prompt:strin
  */
 export async function verifyPairIntent(c:InstallContext,provider:Provider,event:unknown,deps:PairDeps={}):Promise<PairIntent|undefined>{
  try{
- if(!['codex','claude'].includes(provider))return;
- let e:any=event;
- if(event instanceof Uint8Array){if(event.byteLength>HOOK_LIMIT)return;e=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(event));}
- if(!e||typeof e!=='object'||e.hook_event_name!=='UserPromptSubmit'||typeof e.prompt!=='string')return;
- if(Buffer.byteLength(JSON.stringify(e))>HOOK_LIMIT)return;
- const command=parsePairCommand(e.prompt);if(!command)return;
- const inputId=provider==='codex'?e.turn_id:e.prompt_id;assertId(e.session_id);assertId(inputId);
- if(e.is_sidechain===true||e.agent_id||e.agent_type)return;
- if(typeof e.cwd!=='string'||!path.isAbsolute(e.cwd)||typeof e.transcript_path!=='string')return;
- const file=nativePath(e.transcript_path);if(!path.isAbsolute(file)||!file.endsWith('.jsonl'))return;
- const nativeRoot=path.join(c.home,provider==='codex'?'.codex':'.claude',provider==='codex'?'sessions':'projects');
- await safePath(nativeRoot,file);
- if(provider==='claude'&&path.basename(file)!==e.session_id+'.jsonl')return;
+ const e=await readPairEvent(c,provider,event);if(!e)return;const command=parsePairCommand(e.prompt)!;
+ const inputId=(provider==='codex'?e.turn_id:e.prompt_id)!,file=e.transcript_path;
  const rows=await snapshot(file),proof=provider==='codex'?proveCodex(rows,e):proveClaude(rows,e);if(!proof)return;
  const captured=Date.parse(proof.timestamp),now=(deps.now??(()=>new Date()))().getTime();
  if(!Number.isFinite(captured)||!Number.isFinite(now)||captured>now||now>=captured+INTENT_MS)return;

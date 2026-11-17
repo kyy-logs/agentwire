@@ -4,6 +4,7 @@ import {randomInt,randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {assertId} from '../model.ts';
 import {acquireLock,atomicBytes,jsonBytes,safePath} from '../installation/paths.ts';
+import {normalizePairEvent,parsePairCommand} from './capture.ts';
 import type {Candidate,InstallContext} from '../installation/model.ts';
 import type {PairActivation,PairDeps,PairIntent,PairIssue,PairState,PairTransaction} from './model.ts';
 
@@ -22,11 +23,18 @@ function validIntent(v:any):v is PairIntent{
  return v.command.kind==='issue'||v.command.kind==='redeem'&&['codex','claude'].includes(v.command.target)&&typeof v.command.code==='string'&&CODE.test(v.command.code);
 }
 function validState(s:any):asserts s is PairState{
- if(!object(s)||s.schemaVersion!==1||!Array.isArray(s.intents)||!Array.isArray(s.invitations)||!Array.isArray(s.activations))fail('pairing_store_invalid');
- if(s.intents.length+s.invitations.length+s.activations.length>MAX_RECORDS)fail('pairing_store_limit');
+ if(!object(s)||s.schemaVersion!==1||!Array.isArray(s.requests)||!Array.isArray(s.intents)||!Array.isArray(s.invitations)||!Array.isArray(s.activations))fail('pairing_store_invalid');
+ if(s.requests.length+s.intents.length+s.invitations.length+s.activations.length>MAX_RECORDS)fail('pairing_store_limit');
  if(!s.intents.every(validIntent))fail('pairing_store_invalid');
- const ids=[...s.intents.map((x:any)=>x.intentId),...s.invitations.map((x:any)=>x?.invitationId),...s.activations.map((x:any)=>x?.activationId)];
+ const ids=[...s.requests.map((x:any)=>x?.requestId),...s.intents.map((x:any)=>x.intentId),...s.invitations.map((x:any)=>x?.invitationId),...s.activations.map((x:any)=>x?.activationId)];
  if(ids.some(x=>!id(x))||new Set(ids).size!==ids.length)fail('pairing_store_invalid');
+ const inputs=new Set<string>();
+ for(const r of s.requests){
+  if(!object(r))fail('pairing_store_invalid');const event=normalizePairEvent(r.provider,r.event);
+  if(!event||!stamp(r.observedAt)||!stamp(r.expiresAt)||Date.parse(r.expiresAt)-Date.parse(r.observedAt)!==INTENT_MS||!isDeepStrictEqual(event,r.event))fail('pairing_store_invalid');
+  const inputId=r.provider==='codex'?r.event.turn_id:r.event.prompt_id,key=[r.provider,r.event.session_id,inputId].join(':');if(inputs.has(key))fail('pairing_store_invalid');inputs.add(key);
+  if(r.intentId!==undefined){const i=s.intents.find((x:any)=>x.intentId===r.intentId);if(!i||i.source.provider!==r.provider||i.source.sessionId!==r.event.session_id||i.nativeInputId!==inputId||i.source.workspaceRoot!==r.event.cwd||i.proofRef!==r.event.transcript_path+'#'+inputId||!isDeepStrictEqual(i.command,parsePairCommand(r.event.prompt)))fail('pairing_store_invalid');}
+ }
  for(const i of s.invitations){
   if(!object(i))fail('pairing_store_invalid');
   const source=s.intents.find((x:any)=>x.intentId===i.issueIntentId);
@@ -52,9 +60,10 @@ function prune(s:PairState,t:number){
  const keepInv=new Set(s.invitations.map(i=>i.invitationId));s.activations=s.activations.filter(a=>keepInv.has(a.invitationId));
  const keepIntent=new Set([...s.invitations.map(i=>i.issueIntentId),...s.activations.map(a=>a.redeemIntentId)]);
  s.intents=s.intents.filter(i=>keepIntent.has(i.intentId)||!old(i.expiresAt));
+ const intents=new Set(s.intents.map(i=>i.intentId));s.requests=s.requests.filter(r=>r.intentId?intents.has(r.intentId):!old(r.expiresAt));
 }
 async function load(file:string):Promise<PairState>{
- let h;try{h=await open(file,'r');}catch(e:any){if(e.code==='ENOENT')return {schemaVersion:1,intents:[],invitations:[],activations:[]};throw e;}
+ let h;try{h=await open(file,'r');}catch(e:any){if(e.code==='ENOENT')return {schemaVersion:1,requests:[],intents:[],invitations:[],activations:[]};throw e;}
  try{
   const first=await h.stat();if(!first.isFile())fail('pairing_store_invalid');if(first.size>MAX_BYTES)fail('pairing_store_limit');
   const b=Buffer.alloc(MAX_BYTES+1),r=await h.read(b,0,b.length,0),last=await h.stat();if(r.bytesRead>MAX_BYTES)fail('pairing_store_limit');

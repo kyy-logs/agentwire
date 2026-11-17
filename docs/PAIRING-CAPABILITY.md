@@ -1,6 +1,6 @@
 # 配对原生能力：P0 阶段报告
 
-日期：2026-11-17。状态：原 Claude 的子 Agent 创建与原生回传已现场验证通过，当前版本为 2.1.318，原聊天与进程身份均未改变。完整配对 P0 和连接码产品仍未全部完成；Task 2 的只读核验已完成，持久配对、路由与安装仍未实施。
+日期：2026-11-17。状态：原 Claude 的子 Agent 创建与原生回传已现场验证通过，当前版本为 2.1.318，原聊天与进程身份均未改变。完整配对 P0 和连接码产品仍未全部完成；隔离源码已实现来源核验、持久账本与延后核验入口，未安装、未激活，正式新聊天验收仍待完成。
 
 此前“自动审批模型不可用”是表面错误。后续在实际 CC Switch 3.16.2 / DeepSeek 链路复现：非流式响应含 zstd 压缩正文，却丢失 Content-Encoding，导致 Claude Code 分类请求 SyntaxError。相同常量请求仅改变压缩协商即可复现/消除错误；压缩正文解码后是有效 DeepSeek JSON。与该版本源码一致：未知编码返回 Ok(raw)，随后被当成已解码而删除编码头。证据不再支持“等待模型服务恢复”作为这次故障的处理方向。
 
@@ -29,7 +29,7 @@
 
 另有必须解决的时序事实：Codex Hook 捕获发生在完整 user 输入持久记录之前，间隔约 0.589 秒。队列负例的 at-Hook 快照能读到精确 task_started/queue，但 matchingInputRecords=0。不能按原计划假定 Hook 内始终能完成输入 Hash 复核；实际发码/兑换动作必须在完整原生输入可验证之后才准入，证据未齐时保持未授权。此项接口调整仍待后续任务实现，未把未验证请求提升为 PairIntent。
 
-当前未创建任何持久配对产品模块，未激活产品安装，未改变 Bus 连接；两端诊断 ACK 不是一次性连接码。一次性 Codex 观察器已完成并发送唯一续行通知，不继续运行或重复投递。
+早期 P0 调查时尚未创建持久配对模块；之后隔离实现进展见本文末尾。当前未激活产品安装、未改变 Bus 连接；两端诊断 ACK 不是一次性连接码。一次性 Codex 观察器已完成并发送唯一续行通知，不继续运行或重复投递。
 
 本报告对应 `docs/superpowers/plans/2026-11-17-pairing-codes-plan.md` Task 1。产品基线 0.1.1；隔离工作区起点 `4b21331`。已按用户对具体增量的授权追加临时诊断 Hook，已备份并核对；未更新产品运行时或活动连接；用户配置增量仅含已授权的临时诊断 Hook 与上述传输请求头修复。
 
@@ -131,8 +131,18 @@ than at creation. This store does not start services or change connections.
 
 The store's 15 tests and the existing capture/router tests pass (32 total).
 This is offline component evidence, not certification of new-chat pairing.
-Hook routing and the CLI are not wired to the store yet. Codex requires a
-non-authoritative request stage because native input may be written only after
-UserPromptSubmit returns; native evidence must still be verified before an
-operation becomes an authoritative intent. Full native acceptance remains open.
+The isolated Hook router now stages only explicit control requests before route
+lookup, including in an unregistered chat. It returns an exact random ticket via
+native additionalContext. This ticket grants no authority: CLI consumption must
+verify the stored request against the exact native input before creating an
+intent. No latest-request lookup, session override or Hook-time wait is used.
+Requests share the bounded JSON ledger, lock and combined 128-record limit; only
+whitelisted control fields are stored. Unresolved requests expire after two
+minutes; native timestamps independently enforce the same freshness limit.
+
+Seven request/router tests cover evidence arriving after the Hook, retries,
+wrong tickets, changed inputs, stale evidence, peer/queue/child inputs and native
+context output. Full offline regression passes: 221 tests, zero failures/skips,
+exit 0. This does not certify live credential consumption or new-chat pairing.
+Connection activation, CLI/Skills and installation acceptance remain pending.
 

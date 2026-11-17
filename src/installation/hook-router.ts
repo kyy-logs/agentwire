@@ -1,6 +1,11 @@
 import path from 'node:path';import os from 'node:os';import {readFile} from 'node:fs/promises';import {fileURLToPath} from 'node:url';import {assertId} from '../model.ts';import {runHook} from '../lifecycle/hook.ts';import {optional,safePath,resolveLayout} from './paths.ts';import type {InstallContext,Provider} from './model.ts';
-export async function routeHook(c:InstallContext,provider:Provider,input:AsyncIterable<Uint8Array>|Iterable<Uint8Array>):Promise<number>{
+import {stagePairRequest} from '../pairing/requests.ts';import {parsePairCommand} from '../pairing/capture.ts';import type {PairDeps} from '../pairing/model.ts';
+export async function routeHook(c:InstallContext,provider:Provider,input:AsyncIterable<Uint8Array>|Iterable<Uint8Array>,deps:PairDeps&{stdout?:{write(s:string):unknown}}={}):Promise<number>{
  if(!['codex','claude'].includes(provider))throw Error('invalid_provider');const l=resolveLayout(c);let n=0;const chunks:Buffer[]=[];for await(const chunk of input){n+=chunk.length;if(n>1048576)throw Error('stdin_limit');chunks.push(Buffer.from(chunk));}const bytes=Buffer.concat(chunks),event=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes));if(typeof event.session_id!=='string')return 0;
+ // Before route lookup: new chats have no lifecycle route. Staging is not proof
+ // or pairing; CLI consumption must verify the exact persisted native input.
+ const ticket=await stagePairRequest(c,provider,event,deps);
+ if(ticket){const kind=parsePairCommand(event.prompt)!.kind;const additionalContext=`AGENTWIRE_PAIR_REQUEST=${ticket}\n这是本次明确配对请求的临时凭据，原生来源尚未核验，不是连接码或成功回执。使用已加载的 labus 技能执行 labus pair ${kind} --intent ${ticket}。不填写会话ID或工作目录、不查最近凭据、不自行生成连接码；只展示程序实际结果。失败时如实说明，不改变权限或自动选择其他聊天。`;(deps.stdout??process.stdout).write(JSON.stringify({hookSpecificOutput:{hookEventName:'UserPromptSubmit',additionalContext}})+'\n');}
  const file=await safePath(l.root,l.routes),b=await optional(file);if(!b)return 0;if(b.length>262144)throw Error('routes_limit');const routes=JSON.parse(b.toString());if(routes.schemaVersion!==1||!Array.isArray(routes.routes)||routes.routes.length>20)throw Error('invalid_routes');
  const matching=routes.routes.filter((r:any)=>r.provider===provider&&r.sessionId===event.session_id);if(matching.length>1)throw Error('ambiguous_route');if(!matching.length)return 0;const r=matching[0];assertId(r.connectionId);assertId(r.sessionId);const state=await safePath(l.connections,path.join(l.connections,r.connectionId,'state'));return runHook(['--state',state,'--provider',provider,'--session',r.sessionId],[bytes]);
 }
