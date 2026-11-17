@@ -24,3 +24,4 @@ export type Invitation=PairIssue&{
 };
 export type PairState={schemaVersion:1;requests:PairRequest[];intents:PairIntent[];invitations:Invitation[];activations:PairActivation[]};
 export type PairTransaction={state:PairState;commit():Promise<void>};
+export type PairHealth={identity:'confirmed';endpoint:Record<Provider,'detected'|'offline'|'unsupported'|'unknown'>;roundtrip:Record<'codex_to_claude'|'claude_to_codex',{status:'untested'|'observed';messageId?:string;observedAt?:string}>};

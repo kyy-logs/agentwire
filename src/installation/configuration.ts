@@ -22,6 +22,16 @@ function targets(c:InstallContext){return {codex:path.join(c.home,'.codex','hook
 function shellArg(s:string){if(/["$`\r\n%]/.test(s))throw Error('unsupported_hook_path');return '"'+s.replaceAll('\\','/')+'"';}
 function hookGroups(c:InstallContext,provider:Provider){const l=resolveLayout(c);let command=shellArg(c.nodeExe)+' --experimental-strip-types '+shellArg(path.join(l.runtime,'src','installation','hook-router.ts'))+' --root '+shellArg(l.root)+' --provider '+provider;if(provider==='codex'&&process.platform==='win32'){const psArg=(s:string)=>"'"+s.replaceAll("'","''")+"'";const script='& '+[c.nodeExe,'--experimental-strip-types',path.join(l.runtime,'src','installation','hook-router.ts'),'--root',l.root,'--provider',provider].map(psArg).join(' ')+'; exit $LASTEXITCODE';command='powershell.exe -NoProfile -NonInteractive -EncodedCommand '+Buffer.from(script,'utf16le').toString('base64');}return Object.fromEntries((provider==='codex'?['UserPromptSubmit','Stop','Interrupt']:['UserPromptSubmit','Stop','StopFailure']).map(event=>[event,[{hooks:[{type:'command',command,timeout:5}]}]]));}
 async function owned(c:InstallContext){const b=await optional(path.join(resolveLayout(c).install,'configuration-owner.json'));return b?JSON.parse(b.toString()):{targets:{}};}
+/** Read-only disk diagnosis; file presence never proves native loading/trust. */
+export async function inspectChatInstallation(c:InstallContext){
+ const t=targets(c),result:any={nodeRuntime:Number(process.versions.node.split('.')[0])>=24?'supported':'unsupported'};
+ for(const provider of ['codex','claude'] as const){const r:any={hookFile:'missing',skillFile:'missing',runtimeEntry:'missing',nativeVersionSupport:'unverified',nativeTrust:'unverified',currentChatObservation:'unverified'};result[provider]=r;
+  try{const b=await optional(await safePath(c.home,t[provider]));if(b){if(b.length>1048576)throw Error('configuration_limit');const value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b));const wanted=hookGroups(c,provider);r.hookFile=Object.entries(wanted).every(([event,groups])=>Array.isArray(value.hooks?.[event])&&groups.every(group=>value.hooks[event].filter((actual:unknown)=>same(actual,group)).length===1))?'configured':'changed';}}catch{r.hookFile='invalid';}
+  try{const b=await optional(await safePath(c.home,provider==='codex'?t.codexSkill:t.claudeSkill));if(b)r.skillFile=b.includes(Buffer.from('pair issue --intent'))&&b.includes(Buffer.from('pair redeem --intent'))?'present':'outdated';}catch{r.skillFile='invalid';}
+  try{r.runtimeEntry=await optional(await safePath(c.installRoot,path.join(resolveLayout(c).runtime,'src','pairing','cli.ts')))?'present':'missing';}catch{r.runtimeEntry='invalid';}
+ }
+ return result;
+}
 export async function previewConfiguration(c:InstallContext,options:Options={}):Promise<SetupPlan>{
  const pathStore=options.pathStore||registry(c),l=resolveLayout(c),t=targets(c),owner=await owned(c),id=randomUUID();const op:Operation={schemaVersion:1,operationId:id,status:'preview',changes:[],entries:[],appliedTargets:[],rolledBackTargets:[]};
  const desired:{target:string;kind:Entry['kind'];bytes:Buffer;groups?:Entry['groups']}[]=[];

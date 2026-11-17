@@ -144,5 +144,12 @@ Seven request/router tests cover evidence arriving after the Hook, retries,
 wrong tickets, changed inputs, stale evidence, peer/queue/child inputs and native
 context output. Full offline regression passes: 221 tests, zero failures/skips,
 exit 0. This does not certify live credential consumption or new-chat pairing.
-Connection activation, CLI/Skills and installation acceptance remain pending.
+The isolated activation and CLI/Skills have subsequently been implemented.
+Full offline regression now passes 249 tests, zero failures/skips, exit 0.
+Both directions complete pairing, an explicit task, automatic result and followup
+with synthetic native evidence and fake adapters. Recovery covers six write
+boundaries and preserves the same connection ID. Completed retries validate
+activation identity; same-chat existing connections preserve their schema and
+original activation proof. Actual native pairing, installation and new-chat
+acceptance remain pending; these offline tests do not close that gate.
 
