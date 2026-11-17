@@ -11,6 +11,8 @@
   first task. Report identity, endpoint detection and actual round trips separately.
 - Add symmetric `labus pair issue/redeem/status`, chat Skills and read-only disk
   diagnosis. Native trust/loading remains unverified by disk inspection alone.
+- Return an exact cross-provider redeem prompt with issued codes; keep an archived
+  connection disconnected in status/doctor even when its service is offline.
 
 Implemented in an isolated branch and installed locally with explicit user
 authorization for native acceptance; not released. Native pairing is still

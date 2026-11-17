@@ -9,11 +9,16 @@ import {runLabus} from '../../src/labus.ts';
 import {redeemCode} from '../../src/pairing/service.ts';
 import {inspectPairHealth} from '../../src/pairing/health.ts';
 import {askPeer} from '../../src/installation/connections.ts';
+import {parsePairCommand} from '../../src/pairing/capture.ts';
 
 async function command(f:any,args:string[],outer=false){let text='';const io={stdout:{write(s:string){text+=s;}},stderr:{write(){}}};const code=outer?await runLabus(['pair',...args],io,{context:f.c,env:{},connectionDeps:f.deps}):await runPairCommand(f.c,args,io,f.deps);return {code,data:JSON.parse(text)};}
 test('pair CLI refuses arbitrary identities and only consumes an exact staged native request',async t=>{
  const f=await pairingFixture(t),before=await readFile(f.file);for(const args of [['issue','--source-session',f.peers[1].sessionId],['redeem','--code',f.invitation.code],['issue','--intent',randomUUID()],['issue']]){const r=await command(f,args);assert.notEqual(r.code,0);assert.equal(r.data.ok,false);}assert.deepEqual(await readFile(f.file),before);
  const ticket=await stageNativeCommand(f,f.peers[1],'生成连接码');assert.ok(ticket);const r=await command(f,['issue','--intent',ticket],true);assert.equal(r.code,0);assert.match(r.data.data.code,/^[A-Z0-9]{4}-[A-Z0-9]{4}$/);assert.equal(r.data.phase,'code_issued');assert.equal(f.sent.length,0);
+});
+
+test('issued code includes the exact redeem prompt targeting its issuer in the other chat',async t=>{
+ for(const issuerIndex of [0,1]){const f=await pairingFixture(t),issuer=f.peers[issuerIndex],ticket=await stageNativeCommand(f,issuer,'生成连接码'),r=await command(f,['issue','--intent',ticket!]);assert.equal(r.code,0);assert.equal(r.data.data.redeemIn,issuer.provider==='codex'?'claude':'codex');assert.deepEqual(parsePairCommand(r.data.data.redeemPrompt),{kind:'redeem',target:issuer.provider,code:r.data.data.code});assert.equal(f.sent.length,0);}
 });
 
 test('issue and redeem CLI work in both directions without a supplied source session',async t=>{

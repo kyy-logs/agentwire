@@ -145,7 +145,7 @@ wrong tickets, changed inputs, stale evidence, peer/queue/child inputs and nativ
 context output. Full offline regression passes: 221 tests, zero failures/skips,
 exit 0. This does not certify live credential consumption or new-chat pairing.
 The isolated activation and CLI/Skills have subsequently been implemented.
-Full offline regression now passes 259 tests, zero failures/skips, exit 0.
+Full offline regression now passes 261 tests, zero failures/skips, exit 0.
 Both directions complete pairing, an explicit task, automatic result and followup
 with synthetic native evidence and fake adapters. Recovery covers six write
 boundaries and preserves the same connection ID. Completed retries validate
@@ -175,5 +175,14 @@ fail closed. Capture and staged-ticket regressions failed before the fix and
 pass afterward. Read-only replay of the exact failed native input changed from
 unverified to verified at its historical timestamp. Current expiry still
 rejects it; no code was minted from replay. Full offline regression is 259/259.
-Fresh real issuance/redemption and full native pairing acceptance remain pending.
+Subsequent native issuance passed in the unregistered Claude main chat. The
+current Codex redeemed a real ticket with valid human proof, but the invitation
+had expired and was correctly rejected; successful code redemption remains
+unverified. The user then authorized autonomous transport acceptance through
+the existing explicitly selected compatibility connection. Both probe round
+trips passed, followed by two Codex-origin review rounds and two actual
+Claude-origin task rounds (1147 then1148), each attempted once and returned with
+exact native/delivery evidence. Claude really Read all three scoped files and
+only wrote a temporary task input. This is legacy transport acceptance, not
+schema-2 code activation certification. Subsequent CLI regressions give261/261.
 
