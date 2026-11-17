@@ -1,5 +1,9 @@
 # Windows 安装、连接与卸载
 
+本分支新增的连接码入口属于未发布实现，尚未完成产品原窗口/新聊天验收，
+不能把下面已发布 0.1.1 的安装验证算作连接码验证。
+当前进度及正式验收步骤见[连接码验收](PAIRING-ACCEPTANCE.md)。
+
 AgentWire v0.1.1 是 Windows 技术预览；已验证组合及未覆盖场景见[验收边界](CLEAN-MESSAGES-ACCEPTANCE.md)。0.1.0 在真实脚本安装中暴露 PATH 写后超时问题，建议使用 0.1.1。
 
 ## 环境要求
@@ -41,6 +45,16 @@ node --experimental-strip-types src/labus.ts setup --apply --operation <runtime-
 两个 Skill 写入用户的 `.agents/skills/labus` 与 `.claude/skills/labus`。Skill 使用绝对程序路径，不依赖已有窗口继承新 PATH。终端的 `labus` 命令需在 PATH 更新后可见。
 
 ## 选择聊天与连接
+
+在安装了本分支且确认双方加载新 Skill/Hook 后，可在真正目标聊天输入
+`生成连接码`，再在另一聊天输入 `连接 Claude，连接码 XXXX-XXXX`
+（反向为 `连接 Codex，连接码 XXXX-XXXX`）。代码来自本地程序，五分钟有效，
+一次使用。标题和目录只供核对，路由绑定原生聊天身份，不要求双方同目录。
+新聊天无需添加到配置白名单。缺本回合 Hook 凭据时不发码、不按标题猜选。
+
+`paired` 仅表示身份配对，程序不自动发送算术探针；用户可明确委派首任务，
+再按逐方向原生结果判断实际往返。它与下面旧版 `ready` 验证保持分离。
+已有其他活动连接须先按原有保护处理，兑换不会自动覆盖或归档。
 
 在 Codex 说「列出可以连接的 Claude 聊天，让我选」，或在 Claude 说「连接我打开的 Codex」。明确选择目标后，程序进行双向探针；只有 `ready` 才表示连接成功。历史候选、活进程、已入队都不是送达证明。
 

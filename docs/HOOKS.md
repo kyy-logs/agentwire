@@ -11,6 +11,17 @@
 
 router 只将精确登记的 provider/session 路由到对应连接。Hook 将事件同步保存到该连接的 `lifecycle/inbox`，Bus 再处理，允许结束事件先于身份映射到达。普通人工聊天不登记为 Bus 任务结果。
 
+未发布的配对控制入口位于上述路由过滤之前，只匹配固定的人工配对句式。
+Hook 暂存白名单请求字段并通过 additionalContext 返回本回合临时凭据，
+此时不构成 PairIntent，不发码也不连接。客户端用精确凭据调用程序后，
+才核验原生 session、input/turn、来源、正文、cwd 和原生时间。
+这适应 Codex 在 Hook 返回后才写入完整输入的时序；缺证据时拒绝，
+不在 Hook 中等待、不查最近消息。peer/queue、工具及子 Agent 不能成为授权。
+
+配对凭据两分钟首次操作有效，代码五分钟有效；请求、意图、邀请、事务合计
+最多 128 条、256 KiB。终态保留 24 小时，未完成或 needs_check 不清理。
+该入口尚未进行产品原窗口验收，详见[验收边界](PAIRING-ACCEPTANCE.md)。
+
 clean-v1 自动任务不从正文解析 ID：Codex 使用原生 clientUserMessageId 与 turn，Claude 使用 peer uuid、prompt 与祖先链。原生记录读取不到、格式变化或对应多回合时暂停，不拿最近一条回答拼凑结果。
 
 `src/lifecycle/hook.ts` 负责输入采集与规范化；`src/lifecycle/clean-processor.ts` 结合 `src/native/` 下的身份存储和两端证据读取器处理 schema2；旧 manual/legacy 路径由旧处理器保留。两个处理器不会共同接管同一 schema2 任务。

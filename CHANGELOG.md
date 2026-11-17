@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — one-time chat pairing
+
+- Stage explicit pairing requests in native Hook context, then verify the exact
+  persisted human input when the client consumes its ticket. A ticket alone is
+  not authorization; ordinary chat does not create a pairing record.
+- Add bounded JSON invitations, one-time claims and recoverable exact connection
+  activation. No SQLite, additional daemon, model API or automatic pairing probes.
+- Keep legacy connection admission; identity-paired connections allow an explicit
+  first task. Report identity, endpoint detection and actual round trips separately.
+- Add symmetric `labus pair issue/redeem/status`, chat Skills and read-only disk
+  diagnosis. Native trust/loading remains unverified by disk inspection alone.
+
+Implemented in an isolated branch, not installed or released. See
+[pairing acceptance](docs/PAIRING-ACCEPTANCE.md) for offline and native boundaries.
+
 ## 0.1.1 — 2026-11-16
 
 - Fix a real Windows installation failure: the PATH setter could persist its value but exceed the five-second process timeout before ownership was recorded.
