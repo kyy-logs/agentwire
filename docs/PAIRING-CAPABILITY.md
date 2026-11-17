@@ -145,16 +145,35 @@ wrong tickets, changed inputs, stale evidence, peer/queue/child inputs and nativ
 context output. Full offline regression passes: 221 tests, zero failures/skips,
 exit 0. This does not certify live credential consumption or new-chat pairing.
 The isolated activation and CLI/Skills have subsequently been implemented.
-Full offline regression now passes 255 tests, zero failures/skips, exit 0.
+Full offline regression now passes 259 tests, zero failures/skips, exit 0.
 Both directions complete pairing, an explicit task, automatic result and followup
 with synthetic native evidence and fake adapters. Recovery covers six write
 boundaries and preserves the same connection ID. Completed retries validate
 activation identity and current routes, bindings and active pointer; same-chat existing connections preserve their schema and
-original activation proof. Actual native pairing, installation and new-chat
+original activation proof. Actual native pairing and new-chat
 acceptance remain pending; these offline tests do not close that gate.
 
 Independent branch review found two Important issues: completed retries skipped
 infrastructure validation, and exact lookup reused a truncated UI candidate list.
 Both were reproduced with failing tests and fixed in one pass. Exact lookup no
 longer has the UI count cap, but native byte/scan bounds still fail closed.
+
+# Installed native entry investigation
+
+The reviewed runtime and both chat Skills were installed with specific user
+authorization; three Claude product Hook groups were restored, and an expired
+legacy arithmetic-probe connection was archived with history preserved.
+A previously unregistered Claude main chat generated a formal request through
+the real Hook. The model loaded the installed Skill and invoked the CLI with
+the exact native ticket. The first attempt was correctly recorded as failure:
+the verifier counted native Skill text as a second user-shaped root input.
+
+That companion carries isMeta/turnCompanion and sourceToolUseID. The fix only
+excludes it when its exact parent tool result links to one native Skill call
+in the same chat; unknown origins, children and duplicate human inputs still
+fail closed. Capture and staged-ticket regressions failed before the fix and
+pass afterward. Read-only replay of the exact failed native input changed from
+unverified to verified at its historical timestamp. Current expiry still
+rejects it; no code was minted from replay. Full offline regression is 259/259.
+Fresh real issuance/redemption and full native pairing acceptance remain pending.
 

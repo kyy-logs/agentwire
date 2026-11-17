@@ -42,6 +42,30 @@ test('child metadata and unknown origins never authorize a pairing',async t=>{
 test('tool results sharing a Claude prompt ID do not replace or hide its root input',async t=>{
  const f=await fixture(t,'claude');f.rows.push({...f.rows[0],uuid:randomUUID(),origin:undefined,message:{content:[{type:'tool_result',content:'生成连接码'}]}});await f.save();assert.ok(await verifyPairIntent(f.c,'claude',f.event,now));f.rows.shift();await f.save();assert.equal(await verifyPairIntent(f.c,'claude',f.event,now),undefined);
 });
+function skillCompanion(f:Awaited<ReturnType<typeof fixture>>){
+ const assistantId=randomUUID(),resultId=randomUUID(),toolId='call_'+randomUUID();
+ const common={sessionId:f.sessionId,promptId:f.inputId,isSidechain:false,cwd:f.cwd,timestamp:stamp};
+ const assistant={...common,promptId:undefined,type:'assistant',uuid:assistantId,message:{content:[{type:'tool_use',id:toolId,name:'Skill',input:{skill:'labus'}}]}};
+ const result={...common,type:'user',uuid:resultId,sourceToolAssistantUUID:assistantId,message:{content:[{type:'tool_result',tool_use_id:toolId,content:'loaded'}]}};
+ const companion:any={...common,type:'user',uuid:randomUUID(),parentUuid:resultId,isMeta:true,turnCompanion:true,sourceToolUseID:toolId,message:{content:[{type:'text',text:'Native loaded Skill instructions; not another user prompt.'}]}};
+ f.rows.push(assistant,result,companion);return {assistant,result,companion};
+}
+test('native Skill text companion does not duplicate its exact human pairing input',async t=>{
+ const f=await fixture(t,'claude');skillCompanion(f);await f.save();const r=await verifyPairIntent(f.c,'claude',f.event,now);assert.ok(r);assert.equal(r.nativeInputId,f.inputId);assert.equal(r.source.sessionId,f.sessionId);
+});
+test('Skill-looking text without exact native metadata and tool lineage stays ambiguous',async t=>{
+ for(const mutate of [
+  (s:any)=>{delete s.companion.isMeta;},(s:any)=>{delete s.companion.turnCompanion;},
+  (s:any)=>{s.companion.sourceToolUseID='other';},(s:any)=>{s.companion.parentUuid=randomUUID();},
+  (s:any)=>{s.result.sourceToolAssistantUUID=randomUUID();},(s:any)=>{s.assistant.message.content[0].name='Bash';},
+  (s:any)=>{s.companion.origin={kind:'peer'};},(s:any)=>{s.companion.isSidechain=true;},(s:any)=>{s.companion.agentId='worker';},
+ ]){const f=await fixture(t,'claude'),s=skillCompanion(f);mutate(s);await f.save();assert.equal(await verifyPairIntent(f.c,'claude',f.event,now),undefined);}
+ const f=await fixture(t,'claude'),s=skillCompanion(f);f.rows.push(structuredClone(s.assistant));await f.save();assert.equal(await verifyPairIntent(f.c,'claude',f.event,now),undefined);
+});
+test('Skill context cannot replace the human input or hide a duplicate human input',async t=>{
+ const f=await fixture(t,'claude');skillCompanion(f);const human=f.rows.shift();await f.save();assert.equal(await verifyPairIntent(f.c,'claude',f.event,now),undefined);f.rows.unshift(human,structuredClone(human));await f.save();assert.equal(await verifyPairIntent(f.c,'claude',f.event,now),undefined);
+});
+
 test('duplicate human inputs and missing native records remain unverified',async t=>{
  for(const provider of ['codex','claude'] as const){const f=await fixture(t,provider);f.rows.push(structuredClone(f.rows.at(-1)));await f.save();assert.equal(await verifyPairIntent(f.c,provider,f.event,now),undefined);await writeFile(f.file,'');assert.equal(await verifyPairIntent(f.c,provider,f.event,now),undefined);}
 });

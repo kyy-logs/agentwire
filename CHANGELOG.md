@@ -12,7 +12,10 @@
 - Add symmetric `labus pair issue/redeem/status`, chat Skills and read-only disk
   diagnosis. Native trust/loading remains unverified by disk inspection alone.
 
-Implemented in an isolated branch, not installed or released. See
+Implemented in an isolated branch and installed locally with explicit user
+authorization for native acceptance; not released. Native pairing is still
+unverified. Exact Skill tool-result lineage distinguishes native text companions
+from human pairing inputs without trusting their contents. See
 [pairing acceptance](docs/PAIRING-ACCEPTANCE.md) for offline and native boundaries.
 
 ## 0.1.1 — 2026-11-16

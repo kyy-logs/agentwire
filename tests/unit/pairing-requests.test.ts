@@ -26,6 +26,14 @@ test('Hook can stage before Codex native input exists but cannot issue until exa
  await f.save();const intent=await resolvePairRequest(f.c,ticket,f.deps);assert.equal(intent.source.sessionId,f.event.session_id);assert.equal(intent.nativeInputId,f.event.turn_id);assert.ok(await issueCode(f.c,intent.intentId,f.deps));
 });
 
+test('Claude can consume its staged ticket after native Skill loading adds a text companion',async t=>{
+ const f=await fixture(t,'claude'),toolId='call_'+randomUUID(),assistantId=randomUUID(),resultId=randomUUID(),common={sessionId:f.event.session_id,promptId:f.event.prompt_id,isSidechain:false,cwd:f.event.cwd,timestamp:new Date(epoch).toISOString()};
+ f.rows.push({...common,type:'assistant',uuid:assistantId,message:{content:[{type:'tool_use',id:toolId,name:'Skill',input:{skill:'labus'}}]}},
+  {...common,type:'user',uuid:resultId,sourceToolAssistantUUID:assistantId,message:{content:[{type:'tool_result',tool_use_id:toolId,content:'loaded'}]}},
+  {...common,type:'user',uuid:randomUUID(),parentUuid:resultId,isMeta:true,turnCompanion:true,sourceToolUseID:toolId,message:{content:[{type:'text',text:'Native Skill contents'}]}});
+ await f.save();const ticket=await stagePairRequest(f.c,'claude',f.event,f.deps);assert.ok(ticket);const intent=await resolvePairRequest(f.c,ticket,f.deps);const code=await issueCode(f.c,intent.intentId,f.deps);assert.equal(code.issuer.sessionId,f.event.session_id);assert.equal(JSON.parse(await readFile(f.state,'utf8')).invitations.length,1);
+});
+
 test('both providers resolve only the exact staged request and repeated Hook events keep their ticket',async t=>{
  for(const provider of ['codex','claude'] as const){const f=await fixture(t,provider);await f.save();const ticket=await stagePairRequest(f.c,provider,f.event,f.deps);assert.ok(ticket);assert.equal(await stagePairRequest(f.c,provider,f.event,f.deps),ticket);
  const before=await readFile(f.state);await assert.rejects(()=>resolvePairRequest(f.c,randomUUID(),f.deps),/pairing_identity_unconfirmed/);assert.deepEqual(await readFile(f.state),before);

@@ -61,9 +61,19 @@ async function snapshot(file:string):Promise<any[]>{
  }finally{await handle.close();}
 }
 type Proof={timestamp:string;cwd:string};
+function nativeSkillCompanion(rows:any[],r:any,e:any):boolean{
+ // Claude persists Skill contents as a user-shaped text companion. Exclude it
+ // only with native flags AND the exact parent result -> Skill call lineage;
+ // neither its text nor a missing human origin alone is evidence of metadata.
+ if(r.isMeta!==true||r.turnCompanion!==true||r.isSidechain!==false||r.origin!==undefined||r.agentId!==undefined||typeof r.sourceToolUseID!=='string'||!r.sourceToolUseID||typeof r.parentUuid!=='string')return false;
+ const parents=rows.filter(p=>p.uuid===r.parentUuid);if(parents.length!==1)return false;const p=parents[0];
+ if(p.type!=='user'||p.sessionId!==e.session_id||p.promptId!==e.prompt_id||p.isSidechain!==false||p.agentId!==undefined||typeof p.sourceToolAssistantUUID!=='string'||!Array.isArray(p.message?.content)||!p.message.content.some((b:any)=>b?.type==='tool_result'&&b.tool_use_id===r.sourceToolUseID))return false;
+ const calls=rows.filter(a=>a.uuid===p.sourceToolAssistantUUID);if(calls.length!==1)return false;const a=calls[0];
+ return a.type==='assistant'&&a.sessionId===e.session_id&&a.isSidechain===false&&a.agentId===undefined&&Array.isArray(a.message?.content)&&a.message.content.filter((b:any)=>b?.type==='tool_use'&&b.id===r.sourceToolUseID&&b.name==='Skill').length===1;
+}
 function proveClaude(rows:any[],e:any):Proof|undefined{
- // Tool continuations share promptId. Only plain root inputs participate in uniqueness.
- const roots=rows.filter(r=>r?.type==='user'&&r.sessionId===e.session_id&&r.promptId===e.prompt_id&&plainText(r)!==undefined);
+ // Tool continuations and proven native Skill companions share promptId.
+ const roots=rows.filter(r=>r?.type==='user'&&r.sessionId===e.session_id&&r.promptId===e.prompt_id&&plainText(r)!==undefined&&!nativeSkillCompanion(rows,r,e));
  if(roots.length!==1)return;const r=roots[0];
  if(r.isSidechain!==false||r.origin?.kind!=='human'||r.agentId)return;
  if(plainText(r)!==e.prompt||!samePath(r.cwd,e.cwd)||typeof r.timestamp!=='string')return;
