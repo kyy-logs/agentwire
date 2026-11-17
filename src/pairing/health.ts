@@ -9,7 +9,7 @@ import type {InstallContext,PairedConnectionRecord} from '../installation/model.
 import type {PairDeps,PairHealth,PairTransaction} from './model.ts';
 export async function pairEndpoints(c:InstallContext,r:PairedConnectionRecord,deps:PairDeps={}):Promise<PairHealth['endpoint']>{
  const endpoint:PairHealth['endpoint']={codex:'unknown',claude:'unknown'};
- for(const p of ['codex','claude'] as const){try{const matches=(await(deps.discover||discoverCandidates)(c,p)).filter(x=>x.sessionId===r[p].sessionId);
+ for(const p of ['codex','claude'] as const){try{const matches=(await(deps.discover||discoverCandidates)(c,p,r[p].sessionId)).filter(x=>x.sessionId===r[p].sessionId);
   if(matches.length===1&&path.relative(matches[0].workspaceRoot,r[p].workspaceRoot)===''&&matches[0].availability==='live_endpoint')endpoint[p]='detected';else if(!matches.length&&p==='claude')endpoint[p]='offline';
  }catch{/* A failed scan or ambiguous endpoint is unknown, never detected. */}}
  return endpoint;

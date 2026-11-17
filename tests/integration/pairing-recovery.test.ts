@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {readFile,writeFile} from 'node:fs/promises';
+import {readFile,writeFile,unlink} from 'node:fs/promises';
 import {pairingFixture} from '../pairing-helpers.ts';
 import {redeemCode,recoverPairing} from '../../src/pairing/service.ts';
-import {selectConnection,disconnect} from '../../src/installation/connections.ts';
+import {selectConnection,disconnect,askPeer} from '../../src/installation/connections.ts';
 import {capturePairIntent,issueCode,claimCode} from '../../src/pairing/store.ts';
 
 const steps=['claimed','connection_written','bound','routes_written','active_written','connection_paired'];
@@ -40,4 +40,15 @@ test('unfinished activation blocks another invitation and pending work still blo
  const issue=f.make(f.peers[1],{kind:'issue'});await capturePairIntent(f.c,issue,f.deps);const invitation=await issueCode(f.c,issue.intentId,f.deps),intent=f.make(f.peers[0],{kind:'redeem',target:'claude',code:invitation.code});await capturePairIntent(f.c,intent,f.deps);
  await assert.rejects(()=>redeemCode(f.c,intent.intentId,f.deps),/pairing_activation_requires_check/);assert.equal(JSON.parse(await readFile(f.file,'utf8')).activations.length,1);
  const a=JSON.parse(await readFile(f.file,'utf8')).activations[0],r=await recoverPairing(f.c,a.activationId,f.deps),main=[...f.services.values()][0];await main.bus.accept({messageId:randomUUID(),kind:'task',from:'codex',to:'claude',body:'pending fixture'});await assert.rejects(()=>disconnect(f.c,r.connectionId),/unfinished_tasks/);
+});
+
+test('completed retry with missing or conflicting routes pauses instead of reporting paired',async t=>{
+ for(const missing of [false,true])await t.test(missing?'missing':'conflict',async t=>{const f=await pairingFixture(t),r=await redeemCode(f.c,f.redeemer.intentId,f.deps),file=path.join(f.c.installRoot,'routes.json'),a=JSON.parse(await readFile(f.file,'utf8')).activations[0];
+ const foreign=JSON.stringify({schemaVersion:1,routes:[{provider:'claude',connectionId:randomUUID(),sessionId:randomUUID()}]});if(missing)await unlink(file);else await writeFile(file,foreign);
+ await assert.rejects(()=>recoverPairing(f.c,a.activationId,f.deps),/pairing_activation_requires_check/);assert.equal(JSON.parse(await readFile(f.file,'utf8')).activations[0].phase,'needs_check');if(!missing)assert.equal(await readFile(file,'utf8'),foreign);else await assert.rejects(()=>readFile(file),{code:'ENOENT'});assert.equal(f.sent.length,0);});
+});
+
+test('paired explicit task checks route ownership before accepting any message',async t=>{
+ const f=await pairingFixture(t);await redeemCode(f.c,f.redeemer.intentId,f.deps);await writeFile(path.join(f.c.installRoot,'routes.json'),JSON.stringify({schemaVersion:1,routes:[]}));await assert.rejects(()=>askPeer(f.c,f.peers[0],'claude','must not be accepted',randomUUID(),f.deps),/pairing_activation_requires_check/);
+ for(const main of f.services.values())assert.equal((await main.bus.store.list()).length,0);assert.equal(f.sent.length,0);
 });

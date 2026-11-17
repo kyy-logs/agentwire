@@ -145,11 +145,16 @@ wrong tickets, changed inputs, stale evidence, peer/queue/child inputs and nativ
 context output. Full offline regression passes: 221 tests, zero failures/skips,
 exit 0. This does not certify live credential consumption or new-chat pairing.
 The isolated activation and CLI/Skills have subsequently been implemented.
-Full offline regression now passes 249 tests, zero failures/skips, exit 0.
+Full offline regression now passes 255 tests, zero failures/skips, exit 0.
 Both directions complete pairing, an explicit task, automatic result and followup
 with synthetic native evidence and fake adapters. Recovery covers six write
 boundaries and preserves the same connection ID. Completed retries validate
-activation identity; same-chat existing connections preserve their schema and
+activation identity and current routes, bindings and active pointer; same-chat existing connections preserve their schema and
 original activation proof. Actual native pairing, installation and new-chat
 acceptance remain pending; these offline tests do not close that gate.
+
+Independent branch review found two Important issues: completed retries skipped
+infrastructure validation, and exact lookup reused a truncated UI candidate list.
+Both were reproduced with failing tests and fixed in one pass. Exact lookup no
+longer has the UI count cap, but native byte/scan bounds still fail closed.
 

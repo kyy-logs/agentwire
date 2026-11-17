@@ -18,11 +18,24 @@ async function changeRoutes(c:InstallContext,r:ConnectionRecord,remove=false){co
 export function sameChat(a:Candidate,b:Candidate){return a.provider===b.provider&&a.sessionId===b.sessionId&&path.relative(a.workspaceRoot,b.workspaceRoot)==='';}
 export function samePair(r:ConnectionRecord,a:Pick<PairActivation,'codex'|'claude'>){return sameChat(r.codex,a.codex)&&sameChat(r.claude,a.claude);}
 /** Internal only: caller holds connection.lock throughout activation/recovery. */
-export async function checkPairedRoutesLocked(c:InstallContext,a:PairActivation){
+export async function checkPairedRoutesLocked(c:InstallContext,a:Pick<PairActivation,'connectionId'|'codex'|'claude'>){
  const f=await safePath(c.installRoot,resolveLayout(c).routes),bytes=await optional(f);if(!bytes)return;
  if(bytes.length>262144)throw Error('pairing_activation_requires_check');let r;try{r=JSON.parse(bytes.toString());}catch{throw Error('pairing_activation_requires_check');}
  if(r.schemaVersion!==1||!Array.isArray(r.routes)||r.routes.length>2)throw Error('pairing_activation_requires_check');const seen=new Set();
  for(const route of r.routes){if(!route||!['codex','claude'].includes(route.provider)||route.connectionId!==a.connectionId||route.sessionId!==a[route.provider as Provider].sessionId||seen.has(route.provider))throw Error('pairing_activation_requires_check');seen.add(route.provider);}
+}
+/** Completed identity is historical; current routing must still match before a
+ * recovery is called successful or a new message is accepted. Missing completed
+ * infrastructure pauses for inspection rather than recreating unknown routes. */
+export async function assertPairedInfrastructureLocked(c:InstallContext,r:ConnectionRecord){
+ try{
+  const current=await activeConnection(c);if(current.connectionId!==r.connectionId||!samePair(current,r))throw Error('conflict');
+  await checkPairedRoutesLocked(c,r);const routes=JSON.parse((await readFile(await safePath(c.installRoot,resolveLayout(c).routes))).toString());if(routes.routes.length!==2)throw Error('missing_routes');
+  if(r.schemaVersion===1)return; // Legacy selection need not have started a Bus.
+  if(!['paired','offline'].includes(r.phase))throw Error('incomplete_connection');
+  const file=await safePath(c.installRoot,path.join(stateFor(c,r.connectionId),'bindings.json')),bytes=await readFile(file);if(bytes.length>262144)throw Error('bindings_limit');const saved=JSON.parse(bytes.toString());if(saved.schemaVersion!==1||!Array.isArray(saved.bindings)||saved.bindings.length!==2)throw Error('missing_bindings');
+  const seen=new Set();for(const b of saved.bindings){if(!b||!['codex','claude'].includes(b.agentId)||b.kind!==b.agentId||b.sessionId!==r[b.agentId as Provider].sessionId||typeof b.workspaceRoot!=='string'||path.relative(b.workspaceRoot,r[b.agentId as Provider].workspaceRoot)!==''||seen.has(b.agentId))throw Error('binding_conflict');seen.add(b.agentId);}
+ }catch{throw Error('pairing_activation_requires_check');}
 }
 /** Never called outside a withPairState transaction. No Agent messages/probes. */
 export async function activatePairedConnectionLocked(c:InstallContext,a:PairActivation,deps:PairDeps={}):Promise<PairedConnectionRecord>{
@@ -60,7 +73,7 @@ export async function inspectConnection(c:InstallContext,id:string,deps:Deps={})
 }
 async function sendPaired(c:InstallContext,r:PairedConnectionRecord,source:SourceRef,target:Provider,payload:unknown,deps:Deps):Promise<MessageRecord>{
  return withPairState(c,async tx=>{const current=await activeConnection(c);if(current.connectionId!==r.connectionId||current.schemaVersion!==2)throw Error('retry_connection_changed');verifySource(current,source);assertPairAdmission(tx,current);const endpoint=await pairEndpoints(c,current,deps);
-  if(endpoint[target]==='offline'||target==='claude'&&endpoint[target]!=='detected')throw Error('pairing_target_unavailable');await(deps.ensure||ensureService)(c,stateFor(c,r.connectionId));return call(stateFor(c,r.connectionId),'accept',payload);
+  if(endpoint[target]==='offline'||target==='claude'&&endpoint[target]!=='detected')throw Error('pairing_target_unavailable');await assertPairedInfrastructureLocked(c,current);await(deps.ensure||ensureService)(c,stateFor(c,r.connectionId));return call(stateFor(c,r.connectionId),'accept',payload);
  },deps);
 }
 export async function askPeer(c:InstallContext,source:SourceRef,target:Provider,body:string,outboundId:string,deps:Deps={}):Promise<MessageRecord>{const r=await activeConnection(c);if(deps.connectionId&&deps.connectionId!==r.connectionId)throw Error('retry_connection_changed');verifySource(r,source);if(target===source.provider||!['codex','claude'].includes(target))throw Error('invalid_peer');if(r.phase==='disconnected')throw Error('not_connected');const payload={messageId:outboundId,kind:'task',from:source.provider,to:target,returnMode:'auto',body};if(r.schemaVersion===2)return sendPaired(c,r,source,target,payload,deps);await (deps.ensure||ensureService)(c,stateFor(c,r.connectionId));const checked=await inspectConnection(c,r.connectionId,deps);if(checked.phase!=='ready')throw Error('connection_not_ready');return call(stateFor(c,r.connectionId),'accept',payload);}

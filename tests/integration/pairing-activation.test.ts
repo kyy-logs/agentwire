@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {readFile,writeFile,readdir} from 'node:fs/promises';
+import {readFile,writeFile,readdir,mkdir} from 'node:fs/promises';
+import {discoverCandidates} from '../../src/installation/discovery.ts';
 import {randomUUID} from 'node:crypto';
 import {pairingFixture} from '../pairing-helpers.ts';
 import {redeemCode} from '../../src/pairing/service.ts';
@@ -36,4 +37,10 @@ test('another code for the already paired chats reuses the original activation r
  const f=await pairingFixture(t),old=await redeemCode(f.c,f.redeemer.intentId,f.deps),file=path.join(f.c.installRoot,'connections',old.connectionId,'connection.json'),before=await readFile(file);
  const issuer=f.make(f.peers[1],{kind:'issue'});await capturePairIntent(f.c,issuer,f.deps);const code=await issueCode(f.c,issuer.intentId,f.deps),intent=f.make(f.peers[0],{kind:'redeem',target:'claude',code:code.code});await capturePairIntent(f.c,intent,f.deps);
  const r=await redeemCode(f.c,intent.intentId,f.deps);assert.deepEqual(r,old);assert.deepEqual(await readFile(file),before);assert.equal(f.services.size,1);assert.equal(f.sent.length,0);
+});
+
+test('exact native identity outside the twenty displayed Codex candidates can pair',async t=>{
+ const f=await pairingFixture(t);await mkdir(path.join(f.c.home,'.codex'),{recursive:true});const rows=[{id:f.peers[0].sessionId,cwd:f.peers[0].workspaceRoot,updated_at:'2026-01-01'},...Array.from({length:20},()=>({id:randomUUID(),cwd:f.root,updated_at:'2026-11-17'}))];await writeFile(path.join(f.c.home,'.codex','session_index.jsonl'),rows.map(x=>JSON.stringify(x)).join('\n')+'\n');
+ assert.equal((await discoverCandidates(f.c,'codex')).some(x=>x.sessionId===f.peers[0].sessionId),false);const deps={...f.deps,discover:async(c:any,p:any,id?:string)=>p==='codex'?discoverCandidates(c,p,id):f.peers.filter(x=>x.provider==='claude')};
+ assert.equal((await redeemCode(f.c,f.redeemer.intentId,deps)).phase,'paired');assert.equal(f.sent.length,0);
 });
