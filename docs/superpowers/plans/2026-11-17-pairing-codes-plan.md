@@ -8,7 +8,7 @@
 
 **Tech Stack:** Windows、Node.js >=24、TypeScript 原生 strip-types、node:test、node:crypto、现有 JSON/IPC/原生 Hook；零新增运行依赖。
 
-**Spec:** `../specs/2026-11-17-pairing-codes-design.md`。
+**Spec:** `../specs/2026-11-17-pairing-codes-design.md`；补充 `../specs/2026-11-17-new-chat-pairing-design.md`。用户已确认双向语义并要求实施（2026-11-17）。
 
 ## Global Constraints
 
@@ -21,6 +21,8 @@
 - 普通聊天不新增落盘；peer/channel 输入、工具结果、子 Agent 不得成为配对授权。会话 ID、cwd、标题或正文匹配单独均不构成来源证明。
 - 不覆盖其他活动连接；不迁移旧任务；不修改原生工具权限，不用配对跳过 Hook 信任。
 - P0 未通过不实施持久配对模块；测试通过不等于原生兼容已验证。
+- 产品配对入口不使用预登记 session allowlist；安装完成后任意新主聊天均可通过明确人工配对输入证明身份。临时 P0 的限范围白名单不是产品架构。
+- 首版精确支持 `生成连接码`、`给这个聊天生成连接码` 和 `连接 Claude/Codex，连接码 XXXX-XXXX`；只裁首尾空白，拒绝引用、代码围栏、附加正文和 peer 来源。
 - 本轮仅新增设计与计划；实现、用户级安装更新与发布分别报告其真实进度。
 
 ## Review Focus
@@ -54,6 +56,7 @@
 - [ ] 读取 executing-plans 与 using-git-worktrees 技能，在 AgentWire 隔离工作区执行；记录基线、两端版本及 Hook 信任状态，不重装依赖。
 - [ ] 准备一次性、限范围的探针和具体配置差异。优先不动现有配置；若需临时 Hook，先取得该具体范围授权并保留原生信任，结束恢复差异。
 - [ ] 两端各验证：未配对主聊天的固定发码句式、固定兑换句式；同时安排普通输入、peer 相同正文、工具输出、子 Agent、另一同标题聊天作为反例。断言普通输入不落正文，反例不产生配对凭据。
+- [ ] 临时测试口令仅用于来源与上下文交付验证；最终必须在未预登记的新聊天验证正式控制句式。当前 Codex 在 trim 修复后尚缺新的人工口令事件，不重用旧证据充数。
 - [ ] 验证唯一凭据可由发生该输入的当前聊天获得：禁止通过“最近记录”找回；模型指定其他真实 sessionId 或复用别的 nativeInputId 必须失败。
 - [ ] 写能力报告，区分原生已观察事实与离线模拟。任一 provider 不支持时停止本计划，在报告中写清缺失能力；不降级为相信 Skill 参数。
 - [ ] 两端均通过才继续 Task 2；报告提交：`git add docs/PAIRING-CAPABILITY.md`，`git commit -m "docs: verify native pairing identity capabilities"`。公开报告不包含代码、会话 UUID、完整 transcript 或用户路径。
@@ -74,6 +77,7 @@
 - [ ] 写 RED 用例：`ordinary_and_peer_inputs_never_create_pair_intent`、`wrong_session_is_rejected`、`unpaired_chat_can_capture_explicit_command`。精确断言普通输入返回 undefined，peer 不得到 intentId，重复原生事件得到相同 intentId（幂等持久化归 Task 3）。
 - [ ] 运行 `node --experimental-strip-types --test tests/unit/pairing-capture.test.ts`，记录预期缺少接口的 FAIL。
 - [ ] 实现固定句式解析和经过 P0 证明的原生校验，只返回已验证的控制意图。函数不启动 daemon、不网络请求、不扫描全部历史，既有 Hook 路由此时不改。
+- [ ] 新增首尾换行、新会话不在任何预登记列表、同标题同目录身份不同、原生来源不确定均正确拒绝或识别的测试；不得将无预登记条件误改成无来源证明条件。
 - [ ] 增补非法 UTF-8、>1 MiB Hook 输入、缺原生输入身份、过期凭据、不同会话同句式测试。拒绝结果不得把整段聊天正文写进错误日志。
 - [ ] 运行 `node --experimental-strip-types --test tests/unit/pairing-capture.test.ts`，全部 PASS 后提交本任务文件，提交信息 `feat: verify native pairing intents`。
 
@@ -125,6 +129,8 @@
 - [ ] 写 RED：`pair_cli_requires_native_intent_not_arbitrary_session`；`issue_and_redeem_are_symmetric`；`paired_status_never_claims_roundtrip_from_probe_only`；`legacy_needs_check_is_not_promoted`。
 - [ ] 运行 pairing-cli 和 installation-cli 测试，确认新增用例 FAIL。
 - [ ] 实现命令分派、结构化结果与稳定错误码。Skill 只消费原生投递给当前操作的凭据；模糊自然语言先引导用户固定句式，不自行补造凭据；用户不需要提供 UUID 或终端命令。
+- [ ] Skill 描述列出固定配对入口；仅展示程序实际结果，不自行生成连接码或宣称连接成功。显式 /labus 若原生事件类型不同，独立验证来源后才启用。
+- [ ] 复用 setup/configuration 现有 doctor 分派，区分配置文件存在、版本支持、当前聊天实际 Hook 观察。缺失或未加载不冒充已识别；Hook 自身缺失时由显式诊断入口提示，不静默覆盖外部配置。
 - [ ] 在 ask/followup 中按 admissionMode 准入：legacy 保持 ready 要求；新 paired 允许用户显式首任务。identity 未确认、激活未完成、needs_check 或目标已明确离线时拒绝；unknown 能力不冒充已通。继续使用现有幂等 outbox、生命周期和不确定投递暂停逻辑。
 - [ ] 状态固定区分“已配对”“端点检测”“实际往返”，首任务返回后按方向更新 observed；业务结论不升级为成功。status/doctor 不触发 Agent 消息，pair status 不回显连接码。
 - [ ] 运行 pairing-cli、installation-cli、installation-skills 和 pairing 集成测试，全部 PASS；提交 `feat: expose chat pairing and honest connection status`。
@@ -139,6 +145,7 @@
 - [ ] 在隔离安装目录打包/安装，确认新 src/pairing 文件、双方 Skill 均进入运行时；撤销仍保留任务历史且不破坏其他 Hook。实际打包参数沿用 `scripts/package.ps1` 的现有接口，先读脚本再执行。
 - [ ] 准备真实安装的文件级差异和回滚。用户级配置、原生 Hook 信任继续遵循已批准范围；P0 探针授权不推定成产品激活授权。只在具体变更已备好时处理尚缺的确认。
 - [ ] 两个已有窗口验收发码/兑换；有另一同标题聊天时仍绑定正确 Session ID；兑换重复、过期、错误目标均不误连。先断开旧连接须遵循现有未完成任务保护，不为验收强制归档。
+- [ ] 安装一次后新建未登记的双方主聊天，跨目录完成配对；期间不改配置或增加 session allowlist。验证同一会话多活跃端点拒绝歧义、Hook/Skill 缺失无虚假成功；恢复原会话保留身份。
 - [ ] 每个方向执行一次明确的无业务操作任务与一次 followup，观察原生输入、结束事件、唯一结果和回送；验证 pairing 自身零算术探针。用户普通聊天不得自动变成任务或结果。
 - [ ] 原生会话正常退出再恢复后复核同一身份及新端点；新聊天不得沿用旧配对；离线、投递不确定不自动重发。验证旧版 discover/select 与 ready 探针仍工作。
 - [ ] 填写验收矩阵，明确 offline PASS、native PASS、未验项。文档给出固定中文句式、错误处理、代码有效期和隐私边界；不发布原始 transcript、代码或本机路径。
@@ -150,4 +157,4 @@
 
 已自检：设计各节均有所属任务；五项 Review Focus 均落入测试；schema 1 与 schema 2 分支明确；Task 2 的凭据经 Task 3 存储并由 Task 5 消费；Task 4 共享锁不递归取锁；所有成功陈述均有证据门槛。
 
-当前状态：设计与计划已拟定，等待书面审阅。尚未验证 P0、未写产品代码、未改当前安装或连接。审阅认可后先执行 Task 1，P0 通过才进入最小产品实现。
+当前状态：原设计和计划已获用户批准；新聊天设计补充亦已获实施确认，以上增量同步了任务。Task 1 原生 P0 仍进行中，产品代码未开始；已有授权的临时探针配置不等于产品安装或连接激活。先完成 Task 1，P0 通过才进入最小产品实现。
