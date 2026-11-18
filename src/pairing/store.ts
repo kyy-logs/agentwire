@@ -8,7 +8,7 @@ import {normalizePairEvent,parsePairCommand} from './capture.ts';
 import type {Candidate,InstallContext} from '../installation/model.ts';
 import type {PairActivation,PairDeps,PairIntent,PairIssue,PairState,PairTransaction} from './model.ts';
 
-const MAX_BYTES=262144,MAX_RECORDS=128,INTENT_MS=120000,CODE_MS=300000,RETAIN_MS=86400000;
+const MAX_BYTES=262144,MAX_RECORDS=128,INTENT_MS=120000,CODE_MS=3600000,RETAIN_MS=86400000;
 const ALPHABET='0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 const CODE=/^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}$/;
 function fail(code:string):never{throw Error(code);}

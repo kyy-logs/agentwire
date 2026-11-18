@@ -1,5 +1,7 @@
 # 配对原生能力：P0 阶段报告
 
+更新（2026-11-18）：本文件以下保留 P0 调研和诊断历史。当前开发构建已安装，已完成新主聊天跨目录连接码兑换及一次 Codex → Claude 往返；最新验收边界见 [PAIRING-ACCEPTANCE.md](PAIRING-ACCEPTANCE.md)。新码一小时有效，完整离线回归为 264/264；这些更新尚未包含在 v0.1.1 Release 安装包中。
+
 日期：2026-11-17。状态：原 Claude 的子 Agent 创建与原生回传已现场验证通过，当前版本为 2.1.318，原聊天与进程身份均未改变。完整配对 P0 和连接码产品仍未全部完成；隔离源码已实现来源核验、持久账本与延后核验入口，未安装、未激活，正式新聊天验收仍待完成。
 
 此前“自动审批模型不可用”是表面错误。后续在实际 CC Switch 3.16.2 / DeepSeek 链路复现：非流式响应含 zstd 压缩正文，却丢失 Content-Encoding，导致 Claude Code 分类请求 SyntaxError。相同常量请求仅改变压缩协商即可复现/消除错误；压缩正文解码后是有效 DeepSeek JSON。与该版本源码一致：未知编码返回 Ok(raw)，随后被当成已解码而删除编码头。证据不再支持“等待模型服务恢复”作为这次故障的处理方向。
@@ -123,7 +125,7 @@ Codex 补充诊断：按 cwd 查询的 hooks/list 显示探针 enabled=true、tr
 
 The isolated branch now has an uninstalled JSON invitation/claim ledger. It uses
 the existing connection lock and atomic writes, unbiased eight-character codes,
-five-minute invitations and two-minute first-use intents. Duplicate operations
+one-hour invitations and two-minute first-use intents. Duplicate operations
 retain the same result; only one redeemer claims a code. Terminal families are
 retained for 24 hours, while unfinished or uncertain activation is preserved.
 Activation records include `terminalAt` so retention starts at completion rather

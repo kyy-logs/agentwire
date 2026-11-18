@@ -18,9 +18,9 @@ Hook 暂存白名单请求字段并通过 additionalContext 返回本回合临�
 这适应 Codex 在 Hook 返回后才写入完整输入的时序；缺证据时拒绝，
 不在 Hook 中等待、不查最近消息。peer/queue、工具及子 Agent 不能成为授权。
 
-配对凭据两分钟首次操作有效，代码五分钟有效；请求、意图、邀请、事务合计
+配对凭据两分钟首次操作有效，代码一小时有效；请求、意图、邀请、事务合计
 最多 128 条、256 KiB。终态保留 24 小时，未完成或 needs_check 不清理。
-该入口尚未进行产品原窗口验收，详见[验收边界](PAIRING-ACCEPTANCE.md)。
+该入口已验证新主聊天跨目录发码/兑换；各方向任务往返的实际范围见[验收边界](PAIRING-ACCEPTANCE.md)。
 
 clean-v1 自动任务不从正文解析 ID：Codex 使用原生 clientUserMessageId 与 turn，Claude 使用 peer uuid、prompt 与祖先链。原生记录读取不到、格式变化或对应多回合时暂停，不拿最近一条回答拼凑结果。
 

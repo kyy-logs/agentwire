@@ -48,7 +48,7 @@ node --experimental-strip-types src/labus.ts setup --apply --operation <runtime-
 
 在安装了本分支且确认双方加载新 Skill/Hook 后，可在真正目标聊天输入
 `生成连接码`，再在另一聊天输入 `连接 Claude，连接码 XXXX-XXXX`
-（反向为 `连接 Codex，连接码 XXXX-XXXX`）。代码来自本地程序，五分钟有效，
+（反向为 `连接 Codex，连接码 XXXX-XXXX`）。代码来自本地程序，一小时有效，
 一次使用。标题和目录只供核对，路由绑定原生聊天身份，不要求双方同目录。
 新聊天无需添加到配置白名单。缺本回合 Hook 凭据时不发码、不按标题猜选。
 
@@ -74,6 +74,10 @@ labus doctor
 后台 Bus 隐藏运行，无开机自启；重连使用同一状态。发现运行时正被使用时，安装器拒绝覆盖。更新前先正常结束/处理在途任务并断开，不杀原生 Agent。旧原型的固定会话 Hook 必须先精确撤销，不能新旧消费者同时接管。
 
 Windows 的 PATH 通知可能晚于注册表写入。0.1.1 在设置进程结束或超时后重新读取用户 PATH，只有精确等于目标值才登记安装/撤销成功。终端环境未刷新时，可先使用 `%LOCALAPPDATA%\LocalAgentBus\bin\labus.cmd` 的绝对路径，或在刷新环境后重开终端；两端 Skill 使用绝对路径，不依赖 PATH 通知。
+
+已安装的 `labus.cmd` 会在自身子进程中固定 `AGENTWIRE_INSTALL_ROOT`，始终读取所属安装的状态。Codex 沙箱可能重定向 `LOCALAPPDATA`；在沙箱中应使用 Skill 中的完整启动器路径，不能重新拼接沙箱的 `%LOCALAPPDATA%`。安装目录固定不授予额外权限：若原生执行环境要求访问审批，仍须按原生流程处理。直接从源码首次安装且未指定该环境变量时，继续使用当前用户的 `LOCALAPPDATA` 默认位置。
+
+配对会写入项目目录外的用户级状态。Codex 通过 `exec_command` 执行发码、兑换时，应以 `sandbox_permissions: "require_escalated"` 发起原生执行审批，并说明访问 AgentWire 本地状态的用途；这不修改权限配置，也不代替用户批准。若无法获批，应停止并报告。`pairing_storage_access_denied` 表示本地状态访问被拒绝，不能据此认定已创建激活事务或连接码已占用。凭据到期后必须等待新的原始输入，不能重放旧请求。
 
 ## 断开和卸载
 

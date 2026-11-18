@@ -14,7 +14,7 @@
 
 - 基线 `f77b2d0051fda7049c7453b8e6a6e67ef1172382`；实施采用此前已选定的当前会话顺序执行，不重新选择执行方式。
 - 仅一组活动 Codex↔Claude 连接；继续使用现有 CLI 名称 `labus` 和安装目录。
-- 代码：密码学随机生成 8 个 Crockford Base32 字符，显示 `XXXX-XXXX`，有效期 300 秒，一次性。接受大小写和可选中间连字符；不把 O/I 等相似字符猜成数字。
+- 代码：密码学随机生成 8 个 Crockford Base32 字符，显示 `XXXX-XXXX`，有效期 3600 秒，一次性。接受大小写和可选中间连字符；不把 O/I 等相似字符猜成数字。
 - 操作凭据有效期 120 秒。凭据精确绑定一次原生输入及 issue/redeem 参数；凭据 ID 只是后台关联，不让用户抄写。
 - 本地 JSON、现有独占锁和原子写；不用 SQLite 或第三方 API。
 - 配对状态文件上限 256 KiB、最多 128 条凭据/邀请/事务记录（合计）；先清理已过保留期的终态记录，仍满则拒绝新建，不删除未完成事务。终态记录保留 24 小时后可清理。
@@ -97,9 +97,9 @@
 
 - [ ] 写 RED 用例：`only_one_of_two_concurrent_redeemers_wins`（不同 source）；`same_intent_retry_returns_same_code_and_connection_id`；`new_issue_revokes_previous_unclaimed_code`；`expired_code_and_wrong_provider_do_not_mutate_active_connection`。
 - [ ] 运行 `node --experimental-strip-types --test tests/unit/pairing-store.test.ts`，确认 FAIL。
-- [ ] 用 node:crypto 的无偏随机选择生成代码；检查现存代码冲突并重抽。实现 300 秒代码有效期、120 秒首次操作凭据有效期、规范化规则、大小/数量限额和终态清理。已提交操作的幂等结果读取不因 120 秒到期而重新执行副作用。
+- [ ] 用 node:crypto 的无偏随机选择生成代码；检查现存代码冲突并重抽。实现 3600 秒代码有效期、120 秒首次操作凭据有效期、规范化规则、大小/数量限额和终态清理。已提交操作的幂等结果读取不因 120 秒到期而重新执行副作用。
 - [ ] 在 claim 事务中固定双方身份与 connectionId。先于任何连接副作用持久写入 activating；已占用代码仅允许原 redeemIntentId 查回该事务，其他兑换者返回 used。有效性边界为 `now >= expiresAt` 即过期。Hook router 在未匹配路由返回之前调用 verifyPairIntent/capturePairIntent；普通聊天不写文件，重复事件只存同一凭据，既有生命周期路由不变。
-- [ ] 测试 299999/300000 ms、119999/120000 ms、128 条上限、256 KiB 上限、损坏 JSON、活锁/死锁、符号链接路径；文件和锁复用现有保护。测试时钟可注入；不把代码输出到日志。
+- [ ] 测试 3599999/3600000 ms、119999/120000 ms、128 条上限、256 KiB 上限、损坏 JSON、活锁/死锁、符号链接路径；文件和锁复用现有保护。测试时钟可注入；不把代码输出到日志。
 - [ ] 运行 pairing-store、pairing-capture 和 installation-router 三个测试文件，全部 PASS；提交 `feat: add atomic one-time pairing codes`。
 
 ## Task 4: 可恢复连接激活，不自动发送探针

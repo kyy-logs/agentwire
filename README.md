@@ -30,6 +30,18 @@ powershell -NoProfile -File .\install.ps1
 
 现有 PowerShell 策略不允许运行脚本时，保留策略，按照[安装文档](docs/INSTALL.md)使用 Node 入口预览。不需要 `npm install`，零第三方运行依赖。
 
+### 连接码开发预览
+
+`codex/pairing-codes-mvp` 分支包含新聊天连接码配对及 Codex 沙箱兼容修复，尚未打包为新 Release；上面的 v0.1.1 安装包不包含这些更新。从该分支试用：
+
+```powershell
+git clone --branch codex/pairing-codes-mvp https://github.com/kyy-logs/agentwire.git
+cd agentwire
+powershell -NoProfile -File .\install.ps1
+```
+
+在目标 Claude 聊天输入「生成连接码」，再在目标 Codex 聊天以纯文本输入「连接 Claude，连接码 XXXX-XXXX」。新码一小时有效、一次使用，支持双方不同工作目录；反向发码使用程序返回的兑换句式。仍只允许一组活动配对，更换前应正常断开旧配对。原生执行审批继续生效，配对成功与实际任务往返分别验证，详见[配对验收](docs/PAIRING-ACCEPTANCE.md)。
+
 ## 开始协作
 
 1. 打开想连接的两个聊天。

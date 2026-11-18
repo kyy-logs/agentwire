@@ -22,14 +22,14 @@ async function fixture(t:any){
 }
 
 test('issue uses 8 Crockford characters and the same intent keeps its code after intent expiry',async t=>{
- const f=await fixture(t),{i,r}=await f.issue();assert.match(r.code,/^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}$/);assert.equal(Date.parse(r.expiresAt),start+300000);assert.deepEqual(r.issuer,i.source);
+ const f=await fixture(t),{i,r}=await f.issue();assert.match(r.code,/^[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}-[0123456789ABCDEFGHJKMNPQRSTVWXYZ]{4}$/);assert.equal(Date.parse(r.expiresAt),start+3600000);assert.deepEqual(r.issuer,i.source);
  f.clock.value+=120000;assert.deepEqual(await issueCode(f.c,i.intentId,f.deps),r);
 });
 
 test('claim retry preserves its connection ID after both input and invitation expire',async t=>{
  const f=await fixture(t),{r}=await f.issue(),i=await f.redeem(r.code),a=await claimCode(f.c,i.intentId,f.deps);
  assert.equal(a.phase,'activating');assert.equal(a.codex.sessionId,i.source.sessionId);assert.equal(a.claude.sessionId,r.issuer.sessionId);
- f.clock.value+=360000;assert.deepEqual(await claimCode(f.c,i.intentId,f.deps),a);await completeActivation(f.c,a.activationId,f.deps);assert.equal((await readPairActivation(f.c,a.activationId,f.deps)).phase,'paired');
+ f.clock.value+=3600001;assert.deepEqual(await claimCode(f.c,i.intentId,f.deps),a);await completeActivation(f.c,a.activationId,f.deps);assert.equal((await readPairActivation(f.c,a.activationId,f.deps)).phase,'paired');
 });
 
 test('only one concurrent redeemer wins and the loser cannot reuse the occupied code',async t=>{
@@ -53,8 +53,15 @@ test('unprocessed intent expires at exactly 120000ms and rejects future timestam
 test('invitation expiry boundary and wrong provider never mutate an existing connection',async t=>{
  const f=await fixture(t);await mkdir(f.c.installRoot,{recursive:true});const active=path.join(f.c.installRoot,'active-connection.json');await writeFile(active,'unchanged existing connection');const {r}=await f.issue();
  const wrong=await f.redeem(r.code,'claude','codex');await assert.rejects(()=>claimCode(f.c,wrong.intentId,f.deps),/^Error: pairing_provider_mismatch$/);
- f.clock.value=start+299999;const edge=await f.redeem(r.code);assert.ok(await claimCode(f.c,edge.intentId,f.deps));
- const other=await f.issue();f.clock.value+=300000;const expired=await f.redeem(other.r.code);await assert.rejects(()=>claimCode(f.c,expired.intentId,f.deps),/^Error: pairing_code_expired$/);assert.equal(await readFile(active,'utf8'),'unchanged existing connection');
+ f.clock.value=start+3599999;const edge=await f.redeem(r.code);assert.ok(await claimCode(f.c,edge.intentId,f.deps));
+ const other=await f.issue();f.clock.value+=3600000;const expired=await f.redeem(other.r.code);await assert.rejects(()=>claimCode(f.c,expired.intentId,f.deps),/^Error: pairing_code_expired$/);assert.equal(await readFile(active,'utf8'),'unchanged existing connection');
+});
+
+test('a code remains redeemable after five minutes while stored legacy deadlines are preserved',async t=>{
+ const f=await fixture(t),fresh=await f.issue();f.clock.value=start+300000;const current=await f.redeem(fresh.r.code);assert.ok(await claimCode(f.c,current.intentId,f.deps));
+ const legacy=await f.issue();await withPairState(f.c,async tx=>{tx.state.invitations.find(i=>i.invitationId===legacy.r.invitationId)!.expiresAt=new Date(f.clock.value+300000).toISOString();await tx.commit();},f.deps);
+ f.clock.value+=300000;const late=await f.redeem(legacy.r.code);await assert.rejects(()=>claimCode(f.c,late.intentId,f.deps),/^Error: pairing_code_expired$/);
+ assert.equal(Date.parse((await issueCode(f.c,legacy.i.intentId,f.deps)).expiresAt),start+600000);
 });
 
 test('duplicate capture is idempotent and never permits changing its immutable source',async t=>{
@@ -76,7 +83,7 @@ test('commits enforce combined 128 record limit and 256KiB byte limit atomically
 
 test('cleanup after 24 hours frees terminal records but retains unfinished activation families',async t=>{
  const f=await fixture(t),old=await f.issue(),ri=await f.redeem(old.r.code),a=await claimCode(f.c,ri.intentId,f.deps);const done=await f.issue(),di=await f.redeem(done.r.code),d=await claimCode(f.c,di.intentId,f.deps);await completeActivation(f.c,d.activationId,f.deps);
- f.clock.value+=86400000+300001;const fresh=f.make('claude');await f.save(fresh);const state=JSON.parse(await readFile(f.file,'utf8'));assert.equal(state.activations.length,1);assert.equal(state.activations[0].activationId,a.activationId);assert.equal(state.invitations.length,1);assert.equal(state.invitations[0].invitationId,old.r.invitationId);assert.ok(state.intents.some((x:any)=>x.intentId===old.i.intentId));
+ f.clock.value+=86400000+3600001;const fresh=f.make('claude');await f.save(fresh);const state=JSON.parse(await readFile(f.file,'utf8'));assert.equal(state.activations.length,1);assert.equal(state.activations[0].activationId,a.activationId);assert.equal(state.invitations.length,1);assert.equal(state.invitations[0].invitationId,old.r.invitationId);assert.ok(state.intents.some((x:any)=>x.intentId===old.i.intentId));
 });
 
 test('invalid JSON, impossible reference and oversized stored files are preserved and rejected',async t=>{

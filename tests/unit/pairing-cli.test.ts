@@ -21,6 +21,15 @@ test('issued code includes the exact redeem prompt targeting its issuer in the o
  for(const issuerIndex of [0,1]){const f=await pairingFixture(t),issuer=f.peers[issuerIndex],ticket=await stageNativeCommand(f,issuer,'生成连接码'),r=await command(f,['issue','--intent',ticket!]);assert.equal(r.code,0);assert.equal(r.data.data.redeemIn,issuer.provider==='codex'?'claude':'codex');assert.deepEqual(parsePairCommand(r.data.data.redeemPrompt),{kind:'redeem',target:issuer.provider,code:r.data.data.code});assert.equal(f.sent.length,0);}
 });
 
+test('filesystem access denial requests native execution approval without claiming the code',async t=>{
+ for(const errorCode of ['EPERM','EACCES']){
+  const f=await pairingFixture(t),ticket=await stageNativeCommand(f,f.peers[0],`连接 Claude，连接码 ${f.invitation.code}`);assert.ok(ticket);
+  f.deps.discover=async()=>{throw Object.assign(new Error('access denied at local filesystem boundary'),{code:errorCode});};
+  const result=await command(f,['redeem','--intent',ticket!]);assert.notEqual(result.code,0);assert.equal(result.data.errorCode,'pairing_storage_access_denied');assert.equal(result.data.nextAction,'request_native_execution_approval_do_not_change_permissions_or_replay_expired_request');
+  const state=JSON.parse(await readFile(f.file,'utf8'));assert.equal(state.activations.length,0);assert.equal(state.invitations[0].state,'available');assert.equal(f.sent.length,0);
+ }
+});
+
 test('issue and redeem CLI work in both directions without a supplied source session',async t=>{
  for(const reverse of [false,true]){const f=await pairingFixture(t),issuer=f.peers[reverse?0:1],redeemer=f.peers[reverse?1:0],ticket=await stageNativeCommand(f,issuer,'生成连接码'),issue=await command(f,['issue','--intent',ticket!]);assert.equal(issue.code,0);
  const redeem=await stageNativeCommand(f,redeemer,`连接 ${issuer.provider==='claude'?'Claude':'Codex'}，连接码 ${issue.data.data.code}`),result=await command(f,['redeem','--intent',redeem!],true);assert.equal(result.code,0);assert.equal(result.data.phase,'paired');assert.equal(result.data.data.health.identity,'confirmed');assert.equal(result.data.data.health.roundtrip.codex_to_claude.status,'untested');assert.equal(f.sent.length,0);

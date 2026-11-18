@@ -13,10 +13,19 @@
   diagnosis. Native trust/loading remains unverified by disk inspection alone.
 - Return an exact cross-provider redeem prompt with issued codes; keep an archived
   connection disconnected in status/doctor even when its service is offline.
+- Give newly issued one-time codes a one-hour lifetime; retain existing deadlines
+  and the two-minute freshness requirement for first-use native requests.
+- Pin the installed launcher's state root despite sandbox-redirection of
+  LOCALAPPDATA. Preserve native execution approval for writes outside a project.
+- Report EPERM/EACCES as pairing_storage_access_denied instead of an ambiguous
+  activation error; native Codex pairing context explains the approval path.
 
 Implemented in an isolated branch and installed locally with explicit user
-authorization for native acceptance; not released. Native pairing is still
-unverified. Exact Skill tool-result lineage distinguishes native text companions
+authorization for native acceptance; not packaged as a release. On 2026-11-18,
+new Codex and Claude main chats in different directories completed code pairing
+and one observed Codex-to-Claude task round trip. The reverse direction on this
+new pair remains untested. Full offline suite: 264 passed, zero failed/skipped.
+Exact Skill tool-result lineage distinguishes native text companions
 from human pairing inputs without trusting their contents. See
 [pairing acceptance](docs/PAIRING-ACCEPTANCE.md) for offline and native boundaries.
 
