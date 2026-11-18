@@ -5,7 +5,7 @@ import {inspectChatInstallation} from './configuration.ts';
 import {activeConnection} from './connections.ts';
 import {inspectConnectionBindings,inspectConnectionRoutes,inspectConnectionWork,connectionState} from './connection-management.ts';
 import {safePath,optional,hash} from './paths.ts';
-import {serviceHealth} from './service.ts';
+import {inspectService} from './service.ts';
 import {pairEndpoints,inspectPairHealth} from '../pairing/health.ts';
 import {errorGuidance} from './guidance.ts';
 import type {InstallContext,PairedConnectionRecord} from './model.ts';
@@ -38,12 +38,12 @@ export async function diagnoseInstallation(c:InstallContext,options:Options={}){
  let transition=false;try{transition=!!await optional(await safePath(c.installRoot,path.join(c.installRoot,'connection-transition.json')));add('connection_transition',transition?'error':'ok',transition?'connection_switch_requires_check':'no_pending_switch',transition?undefined:'没有未完成的连接切换。',transition?undefined:'none');}catch{add('connection_transition','error','connection_switch_requires_check');}
  let connection;try{connection=await activeConnection(c,true);}catch(e:any){if(e.message==='not_connected')add('active_connection','warning','not_connected','尚无活动连接。','pair_exact_chats');else add('active_connection','error','active_connection_requires_check');}
  let pairHealth;
+ await capture('connection_routes',()=>inspectConnectionRoutes(c,connection),'connection_routes_require_check');
  if(connection){
   add('active_connection',connection.phase==='disconnected'?'warning':'ok','saved_connection',`保存状态: ${connection.phase}；不代表本次通信已验证。`,'inspect_endpoint_and_roundtrip_checks');
-  await capture('connection_routes',()=>inspectConnectionRoutes(c,connection),'connection_routes_require_check');
   await capture('connection_bindings',()=>inspectConnectionBindings(c,connection),'connection_bindings_require_check');
   await capture('connection_work',async()=>{const work=await inspectConnectionWork(c,connection.connectionId);if(work.unfinished)throw Error('connection_has_unfinished_tasks');if(work.nativeOutstanding)throw Error('connection_native_work_outstanding');if(work.artifactsPending)throw Error('connection_storage_requires_check');},'connection_storage_requires_check');
-  try{const h=await serviceHealth(connectionState(c,connection.connectionId));add('bus_service',h.status==='running'?'ok':'error',h.status==='running'?'bus_running':'service_storage_requires_check',`本地 Bus: ${h.status}`,'inspect_original_bus_without_resending_tasks');}catch(e:any){const offline=['ENOENT','ECONNREFUSED'].includes(e.code);add('bus_service',offline?'warning':'error',offline?'bus_offline':'service_identity_unconfirmed',offline?'本地 Bus 当前离线；不会为诊断自动启动。':'本地 Bus 身份或应答未确认。','check_existing_pair_service_before_delegation_do_not_resend');}
+  try{const h=await inspectService(connectionState(c,connection.connectionId));add('bus_service',h.status==='running'?'ok':'error',h.status==='running'?'bus_running':'service_storage_requires_check',`本地 Bus: ${h.status}`,'inspect_original_bus_without_resending_tasks');}catch(e:any){const offline=['ENOENT','ECONNREFUSED'].includes(e.code),unsupported=e.message==='bus_diagnostic_protocol_unverified';add('bus_service',offline?'warning':unsupported?'unverified':'error',offline?'bus_offline':unsupported?'bus_diagnostic_protocol_unverified':'service_identity_unconfirmed',offline?'本地 Bus 当前离线；不会为诊断自动启动。':unsupported?'无法确认此 Bus 支持只读诊断；未向旧服务发送未知命令。':'本地 Bus 身份或应答未确认。','check_existing_pair_service_before_delegation_do_not_resend');}
   const endpoint=await pairEndpoints(c,connection as PairedConnectionRecord,options.connectionDeps);
   for(const p of ['codex','claude'] as const)add(p+'_endpoint',endpoint[p]==='detected'?'ok':endpoint[p]==='offline'?'warning':'unverified',p+'_endpoint_'+endpoint[p],`${p} 精确端点观察: ${endpoint[p]}`,'open_or_resume_exact_chat_history_is_not_online_proof');
   if(connection.schemaVersion===2){try{pairHealth=await inspectPairHealth(c,connection,options.connectionDeps);}catch{add('roundtrip_evidence','error','connection_storage_requires_check');}}

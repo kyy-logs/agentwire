@@ -18,7 +18,7 @@ labus doctor
 labus doctor --check-write
 ```
 
-Claude 侧 connect 命令使用 `--provider claude --source-session ${CLAUDE_SESSION_ID}`，由 Skill 使用原生替换值；doctor 不带会话参数。不能用其他聊天的会话 ID 冒充当前聊天。
+Claude 侧 connect 命令使用 `--provider claude --source-session ${CLAUDE_SESSION_ID}`，由 Skill 使用原生替换值；doctor 不带会话参数。不能用其他聊天的会话 ID 冒充当前聊天。修改全局路由的 switch 额外要求当前执行环境提供匹配的原生会话变量；仅有 Skill 替换参数的 Claude 环境本阶段只能查看列表，切换会明确拒绝。不得手动设置环境变量来绕过该检查。
 
 ## 切换的边界
 
@@ -34,6 +34,8 @@ Claude 侧 connect 命令使用 `--provider claude --source-session ${CLAUDE_SES
 doctor 的 `ok` 表示诊断命令成功返回，具体健康情况看 `checks`：`ok / warning / error / unverified`。错误包含 code、summary、nextAction。它独立报告安装文件、安装产物哈希、实际运行目录、原生信任未知、路由/绑定、任务积压、Bus 和端点。Codex 历史存在不能证明窗口在线。
 
 默认 doctor 只读。`--check-write` 在现有安装根目录尝试唯一临时文件的写入、同步和清理，不创建缺失安装目录。测试的是本次执行环境，不是永久权限承诺。权限不足需按原生提示申请本次执行审批，不修改权限或沙箱设置。诊断不会打印邀请码、临时配对凭据、IPC token 或聊天正文。
+
+新版 Bus 在启动时保存与当前 IPC token 绑定的只读诊断能力记录。doctor 只有确认该记录后才发送只读查询；旧服务或能力无法确认时显示 unverified，不用可能写日志的旧 health 请求试探。切换也会拒绝未确认的协议或异常服务状态，需要先审阅运行时更新与原服务恢复。
 
 ## 验证范围
 

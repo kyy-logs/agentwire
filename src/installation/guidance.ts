@@ -19,5 +19,9 @@ const actions:Record<string,[string,string]>={
  connection_already_active:['所选连接已经是活动连接。','inspect_current_connection_no_switch_needed'],
  source_session_mismatch:['当前聊天不属于所选连接。','connect_list_for_current_native_chat_do_not_supply_another_session_id'],
  installation_busy:['另一项连接操作正在进行。','wait_then_inspect_status_before_retry'],
+ source_native_identity_required:['本次执行没有可核验的原生会话环境，不能仅凭填写的会话 ID 切换连接。','stay_read_only_do_not_set_or_guess_native_session_environment'],
+ source_provider_conflict:['当前执行环境属于另一端或同时包含两端身份，不能确认切换来源。','stay_read_only_use_exact_native_execution_context_do_not_override_environment'],
+ bus_diagnostic_protocol_unverified:['运行中的 Bus 尚未确认支持只读诊断协议。','review_runtime_update_and_exact_service_restart_do_not_probe_unknown_operations'],
+ service_storage_requires_check:['本地 Bus 已因存储或生命周期异常暂停，不能安全切换。','doctor_then_inspect_original_storage_do_not_stop_or_clear_history'],
 };
 export function errorGuidance(code:string){const [summary,nextAction]=actions[code]||['操作尚未得到确认，请保留原状态并检查诊断。','doctor_then_inspect_original_error_do_not_blindly_retry'];return {summary,nextAction};}

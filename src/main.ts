@@ -21,8 +21,9 @@ import {createObserver} from './observer.ts';
 import {statusPage} from './status.ts';
 import {FileLifecycleStore} from './lifecycle/store.ts';
 import {LifecycleProcessor} from './lifecycle/processor.ts';
-import {randomUUID} from 'node:crypto';
-type MainOptions={native?:{client:AppServerClient;readers:Record<Provider,EvidenceReader>};connectionId?:string;newAutoWireVersion?:WireVersion;adapters?:AgentAdapter[];clock?:Clock;intervalMs?:number;signals?:boolean;quiet?:boolean;codexExe?:string};
+import {randomUUID,createHash} from 'node:crypto';
+import {assertNoConnectionSwitch} from './installation/paths.ts';
+type MainOptions={native?:{client:AppServerClient;readers:Record<Provider,EvidenceReader>};installRoot?:string;connectionId?:string;newAutoWireVersion?:WireVersion;adapters?:AgentAdapter[];clock?:Clock;intervalMs?:number;signals?:boolean;quiet?:boolean;codexExe?:string};
 async function codexExe(){
   if(process.env.LOCAL_BUS_CODEX_EXE)return process.env.LOCAL_BUS_CODEX_EXE;
   if(process.platform==='win32'){
@@ -34,6 +35,12 @@ async function codexExe(){
 export async function startMain(root:string,options:MainOptions={}){
   const instanceId=randomUUID();
   root=path.resolve(root);let clean:CleanProcessor|undefined,nativeClient:AppServerClient|undefined,workerPromise:Promise<void>|undefined;let bus:LocalBus|undefined,lifecycle:LifecycleProcessor|undefined,closing=false,working=false,storageError=false;const clock=options.clock||realClock;
+  let installRoot=options.installRoot;
+  if(!installRoot&&path.basename(root)==='state'&&path.basename(path.dirname(path.dirname(root)))==='connections'){
+    try{const r=JSON.parse(await readFile(path.join(path.dirname(root),'connection.json'),'utf8'));if(r.connectionId===path.basename(path.dirname(root))&&[1,2].includes(r.schemaVersion))installRoot=path.dirname(path.dirname(path.dirname(root)));}catch(e:any){if(e.code!=='ENOENT')throw e;}
+  }
+  const admissionGuard=async()=>{if(installRoot)await assertNoConnectionSwitch({installRoot,home:'',sourceRoot:'',nodeExe:process.execPath});};
+  await admissionGuard();
   const log=async(event:string,extra:Record<string,unknown>={})=>{
     try{await appendFile(path.join(root,'bus.log'),JSON.stringify({at:clock.now().toISOString(),event,...extra})+'\n',{mode:0o600});}
     catch{storageError=true;if(!options.quiet)process.stderr.write(JSON.stringify({status:'storage_requires_check',errorCode:'log_write_failed'})+'\n');}
@@ -43,17 +50,18 @@ export async function startMain(root:string,options:MainOptions={}){
     const p=request.payload||{};
     try{
       let data:any;
-      if(request.op==='accept'){if(storageError)throw new Error('storage_requires_check');data=await bus.accept(p);await log('accepted',{messageId:data.message.messageId,state:data.state});}
-      else if(request.op==='reply-current'){if(storageError)throw new Error('storage_requires_check');data=await bus.replyCurrent(p);await log('accepted',{messageId:data.message.messageId,state:data.state});}
-      else if(request.op==='bind')data=await bus.bind(p);
+      if(request.op==='accept'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.accept(p);await log('accepted',{messageId:data.message.messageId,state:data.state});}
+      else if(request.op==='reply-current'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.replyCurrent(p);await log('accepted',{messageId:data.message.messageId,state:data.state});}
+      else if(request.op==='bind'){await admissionGuard();data=await bus.bind(p);}
       else if(request.op==='status'){data=statusPage(await bus.status(p.taskId),p);for(const item of data.items){if(item.activeAttemptId){const intent=await bus.nativeDispatcher?.store.get(item.activeAttemptId);if(intent)item.native={attemptId:intent.attemptId,transportId:intent.transportId,connectionId:intent.connectionId,phase:intent.phase,nativeExecutionId:intent.nativeExecutionId,errorCode:intent.errorCode};}}}
       else if(request.op==='check')data=await bus.check(p.messageId);
       else if(request.op==='stop'){await bus.stop(p.taskId);data={taskId:p.taskId,status:'bus_stopped',nativeAgentCancelled:false};}
       else if(request.op==='health')data={instanceId,pid:process.pid,stateRoot:root,status:storageError?'storage_requires_check':'running',bindings:[...bus.bindings.values()],lifecycle:await lifecycle?.health()};
+      else if(request.op==='diagnostic-health')data={instanceId,pid:process.pid,stateRoot:root,status:storageError||lifecycle?.lastError?'storage_requires_check':'running',bindings:[...bus.bindings.values()],lifecycle:null,diagnosticReadOnly:true};
       else if(request.op==='shutdown'){if(p.instanceId!==instanceId)throw new Error('instance_mismatch');bus.requestShutdown();data={instanceId,status:'closing'};}
       else throw new Error('unknown_operation');
       return {requestId:request.requestId,ok:true,data};
-    }catch(e){const raw=e instanceof Error?e.message:'';const code=/^[a-z_]+$/.test(raw)?raw:'request_failed';await log('request_error',{op:request.op,errorCode:code});return {requestId:request.requestId,ok:false,errorCode:code};}
+    }catch(e){const raw=e instanceof Error?e.message:'';const code=/^[a-z_]+$/.test(raw)?raw:'request_failed';if(request.op!=='diagnostic-health')await log('request_error',{op:request.op,errorCode:code});return {requestId:request.requestId,ok:false,errorCode:code};}
   },{afterRespond:(r,result)=>{if(r.op==='shutdown'&&result.ok)void close().catch(()=>{process.exitCode=1;});}});
   let timer:ReturnType<typeof setInterval>|undefined;
   const close=async()=>{if(closing)return;closing=true;bus?.requestShutdown();if(timer)clearInterval(timer);if(options.signals!==false){process.removeListener('SIGINT',signal);process.removeListener('SIGTERM',signal);}await ipc.close();await workerPromise;await bus?.chain;await clean?.close();await nativeClient?.close();await log('stopped');};
@@ -75,7 +83,8 @@ export async function startMain(root:string,options:MainOptions={}){
     clean=new CleanProcessor(bus,identities,lifecycle.store,readers);await clean.recover();
     if(lifecycle.lastError||(await lifecycle.store.recover()).quarantined)storageError=true;
     const interval=options.intervalMs??500;
-    if(interval>0)timer=setInterval(()=>{if(working||closing||storageError)return;working=true;workerPromise=(async()=>{await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();})().catch(async()=>{storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
+    await atomicJson(path.join(root,'diagnostic-endpoint.json'),{schemaVersion:1,operation:'diagnostic-health',instanceId,pid:process.pid,stateRoot:root,tokenSha256:createHash('sha256').update(await readFile(path.join(root,'auth.token'))).digest('hex')});
+    if(interval>0)timer=setInterval(()=>{if(working||closing||storageError)return;working=true;workerPromise=(async()=>{await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();})().catch(async()=>{storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
     if(options.signals!==false){process.on('SIGINT',signal);process.on('SIGTERM',signal);}
     if(!options.quiet)process.stdout.write(JSON.stringify({status:'running',stateRoot:root,recovery:report})+'\n');
     return {bus,lifecycle,clean,close};

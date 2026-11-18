@@ -7,6 +7,14 @@ import {atomicBytes,jsonBytes,optional,resolveLayout,safePath,deadPid,acquireLoc
 import type {InstallContext,Health,ServiceHandle} from './model.ts';
 const delay=(ms:number)=>new Promise(r=>setTimeout(r,ms));
 export async function serviceHealth(stateRoot:string):Promise<Health>{const r=await requestBus(stateRoot,{requestId:randomUUID(),op:'health'});if(!r.ok||r.data?.stateRoot!==path.resolve(stateRoot)||typeof r.data.instanceId!=='string'||!Number.isInteger(r.data.pid))throw Error('service_identity_unconfirmed');return r.data;}
+/** Never probe old daemons with an unknown operation: their error path may log.
+ * The startup descriptor is bound to this exact IPC token, not merely a PID. */
+export async function inspectService(stateRoot:string):Promise<Health>{
+ const token=await readFile(path.join(stateRoot,'auth.token')),raw=await optional(path.join(stateRoot,'diagnostic-endpoint.json'));if(!raw)throw Error('bus_diagnostic_protocol_unverified');
+ const d=JSON.parse(raw.toString());if(d.schemaVersion!==1||d.operation!=='diagnostic-health'||d.tokenSha256!==hash(token)||d.stateRoot!==path.resolve(stateRoot))throw Error('bus_diagnostic_protocol_unverified');
+ const r=await requestBus(stateRoot,{requestId:randomUUID(),op:'diagnostic-health'});
+ if(!r.ok||r.data?.diagnosticReadOnly!==true||r.data.instanceId!==d.instanceId||r.data.pid!==d.pid||r.data.stateRoot!==path.resolve(stateRoot))throw Error('service_identity_unconfirmed');return r.data;
+}
 export async function runtimeIsActive(c:InstallContext,retireDead=false){const l=resolveLayout(c),file=await safePath(l.root,path.join(l.install,'runtime-active.json')),b=await optional(file);if(!b)return false;const marker=JSON.parse(b.toString());if(!deadPid(marker.pid))return true;if(typeof marker.stateRoot!=='string')throw Error('invalid_service_marker');await safePath(l.connections,marker.stateRoot);try{await serviceHealth(marker.stateRoot);return true;}catch(e:any){if(!['ENOENT','ECONNREFUSED'].includes(e.code))throw e;}if(retireDead){const latest=await optional(file);if(!latest||hash(latest)!==hash(b))throw Error('service_marker_changed');await unlink(file);}return false;}
 export async function spawnBackground(nodeExe:string,args:string[],logs:{out:string;err:string}):Promise<{pid:number}>{
  await mkdir(path.dirname(logs.out),{recursive:true});const out=await open(logs.out,'a',0o600),err=await open(logs.err,'a',0o600);

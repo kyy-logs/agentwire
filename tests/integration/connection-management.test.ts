@@ -10,6 +10,9 @@ import {activeConnection,askPeer,selectConnection} from '../../src/installation/
 import {startMain} from '../../src/main.ts';
 import {serviceHealth} from '../../src/installation/service.ts';
 import {acquireLock} from '../../src/installation/paths.ts';
+import {requestBus} from '../../src/ipc.ts';
+import {eventKey,executionKey} from '../../src/lifecycle/model.ts';
+import {disconnect} from '../../src/installation/connections.ts';
 import type {Candidate,PairedConnectionRecord} from '../../src/installation/model.ts';
 
 const api:any=await import('../../src/installation/connection-management.ts').catch(e=>{if(e.code==='ERR_MODULE_NOT_FOUND')return {};throw e;});
@@ -105,7 +108,7 @@ test('uncertain shutdown and interruption retain transition guard and block furt
   const f=await savedPairs(t),p=await api.previewConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,f.deps);
   const main=await startMain(f.state(f.pairs[0]),{adapters:[],quiet:true,intervalMs:0});t.after(()=>main.close());
   const deps={...f.deps,shutdown:async()=>{if(mode==='shutdown')return {status:'needs_check'};await main.close();if(mode==='late_task')await main.bus.store.putNew(createTask({messageId:randomUUID(),from:'codex',to:'claude',targetSessionId:f.pairs[0].claude.sessionId,body:'late'},realClock));return {status:'closed'};},afterSwitchStep:async(step:string)=>{if(mode==='interrupted'&&step==='routes_written')throw Error('fixture_interrupted');}};
-  await assert.rejects(api.applyConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,p.operationId,deps),/service_shutdown_unconfirmed|fixture_interrupted|connection_has_unfinished_tasks/);
+  await assert.rejects(api.applyConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,p.operationId,deps),/service_shutdown_unconfirmed|fixture_interrupted|connection_has_unfinished_tasks|switch_preview_changed/);
   await assert.rejects(askPeer(f.c,f.source,'claude','never sent',randomUUID(),f.deps),/connection_switch_requires_check/);
   await assert.rejects(selectConnection(f.c,f.source,f.candidates[1],{self:f.self}),/connection_switch_requires_check/);
   await assert.rejects(api.applyConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,p.operationId,deps),/connection_switch_requires_check/);
@@ -126,4 +129,36 @@ test('legacy admission holds the switch lock until IPC acceptance is resolved',a
 test('malformed connection timestamps cannot break the entire saved list',async t=>{
  const f=await savedPairs(t);const malformed={...f.pairs[1],createdAt:null};await f.save(malformed);
  const result=await api.listConnections(f.c,f.source,f.deps);assert.equal(result.connections.length,1);assert.equal(result.errors[0].connectionId,f.pairs[1].connectionId);assert.equal(result.errors[0].code,'invalid_connection');
+});
+
+test('a task accepted then stopped after preview still invalidates that preview',async t=>{
+ const f=await savedPairs(t),p=await api.previewConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,f.deps),store=new FileMessageStore(f.state(f.pairs[0]),realClock),r=(await store.putNew(createTask({messageId:randomUUID(),from:'codex',to:'claude',targetSessionId:f.pairs[0].claude.sessionId,body:'new but already stopped'},realClock))).record;
+ await store.replace({...r,state:'stopped'});await assert.rejects(api.applyConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,p.operationId,f.deps),/switch_preview_changed/);
+});
+
+test('installed Bus rejects low-level accept, reply-current and bind while a switch guard survives',async t=>{
+ const f=await savedPairs(t),state=f.state(f.pairs[0]),main=await startMain(state,{connectionId:f.pairs[0].connectionId,adapters:[],quiet:true,intervalMs:0});t.after(()=>main.close());
+ await writeFile(path.join(f.c.installRoot,'connection-transition.json'),'{}');for(const [op,payload] of [['accept',{messageId:randomUUID(),kind:'task',from:'codex',to:'claude',body:'must not enter'}],['reply-current',{messageId:randomUUID(),from:'claude',body:'must not enter'}],['bind',{agentId:'codex',kind:'codex',sessionId:f.self.sessionId,workspaceRoot:f.self.workspaceRoot}]] as const){const r=await requestBus(state,{requestId:randomUUID(),op,payload});assert.equal(r.ok,false);assert.equal(r.errorCode,'connection_switch_requires_check');}
+ assert.equal((await main.bus.store.list()).length,0);
+ await assert.rejects(startMain(state,{adapters:[],quiet:true,intervalMs:0}),/connection_switch_requires_check/);
+});
+
+test('offline lifecycle evidence corruption and execution filename mismatch block switching',async t=>{
+ for(const kind of ['events','clean-hints','executions']){const f=await savedPairs(t),dir=path.join(f.state(f.pairs[1]),'lifecycle',kind);await mkdir(dir,{recursive:true});const ref={provider:'claude' as const,sessionId:f.pairs[1].claude.sessionId,nativeExecutionId:randomUUID()},value=kind==='executions'?{...ref,messageId:randomUUID(),dispatchNonce:randomUUID(),phase:'applied'}:{};await writeFile(path.join(dir,'a'.repeat(64)+'.json'),JSON.stringify(value));await assert.rejects(api.previewConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,f.deps),/connection_storage_requires_check/);}
+});
+
+test('completed parent cannot hide a missing or incorrectly linked reply',async t=>{
+ for(const broken of ['missing','wrong_parent']){const f=await savedPairs(t),store=new FileMessageStore(f.state(f.pairs[0]),realClock),r=(await store.putNew(createTask({messageId:randomUUID(),from:'codex',to:'claude',targetSessionId:f.pairs[0].claude.sessionId,body:'work'},realClock))).record,replyId=randomUUID();
+  if(broken==='wrong_parent')await store.putNew({...r.message,messageId:replyId,kind:'reply',replyTo:randomUUID(),from:'claude',to:'codex',targetSessionId:f.self.sessionId});
+  await store.replace({...r,state:'completed',attempts:1,resultRef:replyId});await assert.rejects(api.previewConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,f.deps),/connection_storage_requires_check/);
+ }
+});
+
+test('normal disconnected history is never labeled as an active connection',async t=>{
+ const f=await savedPairs(t);await disconnect(f.c,f.pairs[0].connectionId);const r=await api.listConnections(f.c,f.source,f.deps);assert.equal(r.connections.find((x:any)=>x.connectionId===f.pairs[0].connectionId).active,false);assert.equal(r.current,undefined);assert.equal(r.lastSelected.connectionId,f.pairs[0].connectionId);
+});
+
+test('paused Bus health blocks switching before shutdown even with empty task storage',async t=>{
+ const f=await savedPairs(t),main=await startMain(f.state(f.pairs[0]),{adapters:[],quiet:true,intervalMs:0});t.after(()=>main.close());main.lifecycle.lastError='fixture_storage_pause';let stopped=false;
+ await assert.rejects(api.previewConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,{...f.deps,shutdown:async()=>{stopped=true;return {status:'closed'};}}),/service_storage_requires_check/);assert.equal(stopped,false);assert.equal((await activeConnection(f.c)).connectionId,f.pairs[0].connectionId);
 });

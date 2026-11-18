@@ -3,13 +3,13 @@ import {readdir,readFile,unlink} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {assertId,realClock} from '../model.ts';
 import {FileMessageStore} from '../store.ts';
-import {FileLifecycleStore} from '../lifecycle/store.ts';
-import {validateExecution} from '../lifecycle/model.ts';
+import {FileLifecycleStore,validateCleanHint} from '../lifecycle/store.ts';
+import {validateExecution,executionKey,digest} from '../lifecycle/model.ts';
 import {IdentityStore} from '../native/identity-store.ts';
 import {activeConnection,readConnection} from './connections.ts';
 import {safePath,optional,atomicBytes,jsonBytes,hash,acquireLock,assertNoConnectionSwitch,deadPid} from './paths.ts';
 import {pairEndpoints} from '../pairing/health.ts';
-import {serviceHealth,shutdownService} from './service.ts';
+import {inspectService,shutdownService} from './service.ts';
 import {withPairState} from '../pairing/store.ts';
 import {sameChat} from './connections.ts';
 import type {InstallContext,SourceRef,ConnectionRecord,PairedConnectionRecord} from './model.ts';
@@ -34,18 +34,26 @@ export async function inspectConnectionWork(c:InstallContext,id:string){
   if(!terminal.has(r.state))work.unfinished++;if(r.state==='needs_check')work.uncertain++;
   if(r.message.kind!=='reply'&&r.attempts>0&&r.receipt?.status!=='rejected'&&!r.resultRef&&!await life.getResult(r.message.messageId))work.nativeOutstanding++;
  }
+ for(const r of records.values())if(r.resultRef){
+  assertId(r.resultRef);const reply=records.get(r.resultRef),m=r.message,b=reply?.message;
+  if(!b||b.kind!=='reply'||b.replyTo!==m.messageId||b.taskId!==m.taskId||b.from!==m.to||b.to!==m.from||m.schemaVersion===2&&(b.schemaVersion!==2||b.sourceSessionId!==m.targetSessionId||b.targetSessionId!==m.sourceSessionId))throw Error('connection_storage_requires_check');
+ }
  const native=new IdentityStore(root,realClock);
  for(const e of await names(c,native.root)){
   if(e.name==='quarantine'||e.name.endsWith('.tmp')){work.artifactsPending++;continue;}if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');
   await safePath(c.installRoot,path.join(native.root,e.name));const i=await native.get(e.name.slice(0,-5));if(!i)throw Error('connection_storage_requires_check');
-  const r=records.get(i.messageId),settled=r&&(r.resultRef||r.message.kind==='reply'&&r.state==='delivered'&&r.receipt?.status==='accepted'&&r.receipt.evidenceRef);
+  const r=records.get(i.messageId);if(!r)throw Error('connection_storage_requires_check');const settled=r.resultRef||r.message.kind==='reply'&&r.state==='delivered'&&r.receipt?.status==='accepted'&&r.receipt.evidenceRef;
   if(i.phase==='needs_check'||!['not_written','reply_committed','delivered'].includes(i.phase)&&!settled)work.nativeOutstanding++;
  }
  for(const dir of ['quarantine','lifecycle/inbox','lifecycle/quarantine','lifecycle/conflicts'])work.artifactsPending+=(await names(c,path.join(root,dir))).length;
  for(const e of await names(c,path.join(root,'lifecycle','executions'))){
   if(!e.isFile()||!e.name.endsWith('.json')){work.artifactsPending++;continue;}
-  const file=await safePath(c.installRoot,path.join(root,'lifecycle','executions',e.name));const execution=JSON.parse(await readFile(file,'utf8'));validateExecution(execution);if(execution.phase!=='applied')work.artifactsPending++;
+  const file=await safePath(c.installRoot,path.join(root,'lifecycle','executions',e.name));const execution=JSON.parse(await readFile(file,'utf8'));validateExecution(execution);if(executionKey(execution)+'.json'!==e.name||!records.has(execution.messageId))throw Error('connection_storage_requires_check');
+  if(execution.replyMessageId){const reply=records.get(execution.replyMessageId);if(!reply||reply.message.kind!=='reply'||reply.message.replyTo!==execution.messageId)throw Error('connection_storage_requires_check');}if(execution.phase!=='applied')work.artifactsPending++;
  }
+ for(const e of await names(c,path.join(root,'lifecycle','events'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');await safePath(c.installRoot,path.join(root,'lifecycle','events',e.name));const event=await life.getEvent(e.name.slice(0,-5));if(!event)throw Error('connection_storage_requires_check');if(!await life.isApplied(event.eventKey))work.artifactsPending++;}
+ for(const e of await names(c,path.join(root,'lifecycle','clean-hints'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');const file=await safePath(c.installRoot,path.join(root,'lifecycle','clean-hints',e.name)),hint=JSON.parse(await readFile(file,'utf8'));validateCleanHint(hint);const {observedAt,...semantic}=hint;if(digest(JSON.stringify(semantic))+'.json'!==e.name)throw Error('connection_storage_requires_check');}
+ for(const e of await names(c,path.join(root,'lifecycle','results'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');await safePath(c.installRoot,path.join(root,'lifecycle','results',e.name));const result=await life.getResult(e.name.slice(0,-5));if(!result||!records.has(result.messageId))throw Error('connection_storage_requires_check');}
  return work;
 }
 export async function listConnections(c:InstallContext,source:SourceRef,deps:PairDeps={}){
@@ -57,13 +65,13 @@ export async function listConnections(c:InstallContext,source:SourceRef,deps:Pai
   if(!isId(e.name))continue;
   try{
    const r=await readConnection(c,e.name);if(r[source.provider].sessionId!==source.sessionId)continue;
-   const view:any={...r,active:current?.connectionId===r.connectionId,endpoint:await pairEndpoints(c,r as PairedConnectionRecord,deps)};
+   const view:any={...r,active:current?.phase!=='disconnected'&&current?.connectionId===r.connectionId,endpoint:await pairEndpoints(c,r as PairedConnectionRecord,deps)};
    try{view.work=await inspectConnectionWork(c,r.connectionId);}catch{view.errorCode='connection_storage_requires_check';}
    connections.push(view);
   }catch{errors.push({connectionId:e.name,code:'invalid_connection'});}
  }
  connections.sort((a,b)=>Number(b.active)-Number(a.active)||a.createdAt.localeCompare(b.createdAt)||a.connectionId.localeCompare(b.connectionId));
- return {current,connections,errors};
+ return {current:current?.phase==='disconnected'?undefined:current,lastSelected:current?.phase==='disconnected'?current:undefined,connections,errors};
 }
 
 type SwitchDeps=PairDeps&{shutdown?:typeof shutdownService;afterSwitchStep?:(step:'guard_written'|'services_stopped'|'routes_written'|'active_written')=>Promise<void>};
@@ -99,7 +107,8 @@ async function targetAvailable(c:InstallContext,r:PairedConnectionRecord,deps:Pa
 async function snapshot(c:InstallContext,from:ConnectionRecord|undefined,to:ConnectionRecord){
  const files=[path.join(c.installRoot,'active-connection.json'),path.join(c.installRoot,'routes.json'),recordFile(c,to.connectionId),path.join(connectionState(c,to.connectionId),'bindings.json')];
  if(from&&from.connectionId!==to.connectionId)files.push(recordFile(c,from.connectionId),path.join(connectionState(c,from.connectionId),'bindings.json'));
- const out:Record<string,string|null>={};for(const f of files){const b=await optional(await safePath(c.installRoot,f));out[path.relative(c.installRoot,f)]=b?hash(b):null;}return out;
+ const out:Record<string,string|null>={};for(const f of files){const b=await optional(await safePath(c.installRoot,f));out[path.relative(c.installRoot,f)]=b?hash(b):null;}
+ for(const r of [from,to].filter((r,index,all)=>r&&all.findIndex(x=>x?.connectionId===r.connectionId)===index) as ConnectionRecord[]){const accepted=(await names(c,path.join(connectionState(c,r.connectionId),'messages'))).filter(e=>e.isFile()&&e.name.endsWith('.json')).map(e=>e.name).sort();out['accepted:'+r.connectionId]=hash(JSON.stringify(accepted));}return out;
 }
 async function current(c:InstallContext){try{return await activeConnection(c);}catch(e:any){if(e.message!=='not_connected')throw e;}}
 async function validateSwitch(c:InstallContext,source:SourceRef,from:ConnectionRecord|undefined,to:ConnectionRecord,deps:SwitchDeps){
@@ -109,6 +118,7 @@ async function validateSwitch(c:InstallContext,source:SourceRef,from:ConnectionR
  if(from&&from.phase!=='disconnected'&&(!['paired','ready'].includes(from.phase)||from.errorCode))throw Error('connection_not_ready');
  await inspectConnectionRoutes(c,from);await inspectConnectionBindings(c,to);await assertIdle(c,to);
  if(from&&from.phase!=='disconnected'){await inspectConnectionBindings(c,from);await assertIdle(c,from);}
+ for(const r of [from,to]){if(!r||r.phase==='disconnected'&&r!==to)continue;try{const h=await inspectService(connectionState(c,r.connectionId));if(h.status!=='running')throw Error('service_storage_requires_check');}catch(e:any){if(!['ENOENT','ECONNREFUSED'].includes(e.code))throw e;}}
  await targetAvailable(c,to,deps);
 }
 export async function previewConnectionSwitch(c:InstallContext,source:SourceRef,id:string,deps:SwitchDeps={}):Promise<SwitchPlan>{
@@ -122,11 +132,12 @@ export async function previewConnectionSwitch(c:InstallContext,source:SourceRef,
 }
 async function stopBus(c:InstallContext,r:ConnectionRecord,deps:SwitchDeps){
  const state=connectionState(c,r.connectionId);let h;
- try{h=await serviceHealth(state);}catch(e:any){
+ try{h=await inspectService(state);}catch(e:any){
   if(!['ENOENT','ECONNREFUSED'].includes(e.code))throw Error('service_shutdown_unconfirmed');
   const b=await optional(await safePath(c.installRoot,path.join(c.installRoot,'install','runtime-active.json')));
   if(b){const m=JSON.parse(b.toString());if(m.stateRoot===path.resolve(state)&&!deadPid(m.pid))throw Error('service_shutdown_unconfirmed');}return;
  }
+ if(h.status!=='running')throw Error('service_storage_requires_check');
  if((await(deps.shutdown||shutdownService)(h)).status!=='closed')throw Error('service_shutdown_unconfirmed');
 }
 export async function applyConnectionSwitch(c:InstallContext,source:SourceRef,id:string,operationId:string,deps:SwitchDeps={}):Promise<PairedConnectionRecord>{

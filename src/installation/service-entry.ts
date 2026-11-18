@@ -9,6 +9,6 @@ const connectionId=path.basename(path.dirname(path.resolve(stateRoot)));assertId
 // Preserve the legacy bootstrap context contract. New identity-paired runtime
 // additionally requires a complete valid schema-2 connection record.
 if(record.schemaVersion===2){const {readConnection}=await import('./connections.ts');await readConnection({installRoot,home:'',sourceRoot:'',nodeExe:process.execPath},connectionId);}
-await startMain(stateRoot,{connectionId,newAutoWireVersion:'clean-v1'});
+await startMain(stateRoot,{connectionId,installRoot,newAutoWireVersion:'clean-v1'});
 // No separate daemon loop: the existing Bus timer owns process lifetime.
 process.once('beforeExit',async()=>{const marker=path.join(installRoot,'install','runtime-active.json');try{const h=JSON.parse(await readFile(marker,'utf8'));if(h.pid===process.pid)await unlink(marker);}catch{}});

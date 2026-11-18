@@ -42,3 +42,10 @@ test('new flags cannot leak into discovery, status, pairing or ordinary task com
  const f=await fixture(t);for(const args of [['connect','list','--provider','codex','--apply'],['connect','discover','--provider','codex','--operation',randomUUID()],['status','--check-write'],['pair','status','--check-write'],['doctor','--provider','codex']]){const r=await command(f,args);assert.equal(r.code,2);assert.equal(r.result.errorCode,'unexpected_option');}
  const identity=await command(f,['pair','issue']);assert.equal(identity.result.errorCode,'pairing_identity_unconfirmed');assert.ok(identity.result.summary);
 });
+
+test('switch cannot use a declared Claude session without matching native execution context',async t=>{
+ const f=await fixture(t),args=['connect','switch','--provider','claude','--source-session',f.peers[1].sessionId,'--connection',f.second.connectionId];
+ const own={...f.second,claude:f.first.claude,codex:{...f.first.codex,sessionId:randomUUID()}};f.peers.push(own.codex);await writeFile(path.join(f.c.installRoot,'connections',own.connectionId,'connection.json'),JSON.stringify(own));await writeFile(path.join(f.c.installRoot,'connections',own.connectionId,'state','bindings.json'),JSON.stringify({schemaVersion:1,bindings:['codex','claude'].map(p=>({agentId:p,kind:p,sessionId:(own as any)[p].sessionId,workspaceRoot:(own as any)[p].workspaceRoot}))}));
+ for(const env of [{},{CODEX_THREAD_ID:f.peers[0].sessionId}]){const r=await command(f,args,{...f.cliDeps,env});assert.notEqual(r.code,0);assert.match(r.result.errorCode,/source_(native_identity_required|provider_conflict)/);}
+ const native=await command(f,args,{...f.cliDeps,env:{CLAUDE_SESSION_ID:f.peers[1].sessionId}});assert.equal(native.code,0);assert.equal(native.result.phase,'preview');
+});

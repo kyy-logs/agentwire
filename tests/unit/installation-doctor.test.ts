@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import {mkdir,readFile,writeFile,readdir} from 'node:fs/promises';
+import {mkdir,readFile,writeFile,readdir,unlink} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {temp} from '../helpers.ts';
 import {hash} from '../../src/installation/paths.ts';
@@ -11,6 +11,7 @@ const api:any=await import('../../src/installation/doctor.ts').catch(e=>{if(e.co
 const guidance:any=await import('../../src/installation/guidance.ts').catch(e=>{if(e.code==='ERR_MODULE_NOT_FOUND')return {};throw e;});
 async function fixture(t:any){const root=await temp(t),c={home:path.join(root,'home'),installRoot:path.join(root,'install'),sourceRoot:root,nodeExe:process.execPath};return {root,c};}
 const check=(report:any,id:string)=>{const row=report.checks.find((x:any)=>x.id===id);assert.ok(row,'check exists: '+id);return row;};
+async function tree(root:string):Promise<any>{const result:any={};for(const e of await readdir(root,{withFileTypes:true})){const file=path.join(root,e.name);result[e.name]=e.isDirectory()?await tree(file):hash(await readFile(file));}return result;}
 
 test('doctor missing installation stays read-only and reports independent failures and actual paths',async t=>{
  assert.equal(typeof api.diagnoseInstallation,'function');const f=await fixture(t),before=await readdir(f.root),r=await api.diagnoseInstallation(f.c,{env:{}});
@@ -51,5 +52,12 @@ test('doctor observes a real local test Bus without starting a vendor agent or c
  assert.equal(typeof api.diagnoseInstallation,'function');const f=await fixture(t),id=randomUUID(),candidate=(provider:string)=>({provider,sessionId:randomUUID(),workspaceRoot:f.root,availability:'candidate'}),r={schemaVersion:2,admissionMode:'identity-pair-v1',connectionId:id,phase:'paired',codex:candidate('codex'),claude:candidate('claude'),createdAt:new Date().toISOString(),pairing:{activationId:randomUUID(),identity:'confirmed'}};
  const dir=path.join(f.c.installRoot,'connections',id),state=path.join(dir,'state');await mkdir(state,{recursive:true});await writeFile(path.join(dir,'connection.json'),JSON.stringify(r));await writeFile(path.join(f.c.installRoot,'active-connection.json'),JSON.stringify({connectionId:id}));
  await api.diagnoseInstallation(f.c,{env:{},connectionDeps:{discover:async()=>[]}});assert.deepEqual(await readdir(state),[]);
- const main=await startMain(state,{adapters:[],quiet:true,intervalMs:0});t.after(()=>main.close());const report=await api.diagnoseInstallation(f.c,{env:{},connectionDeps:{discover:async()=>[]}});assert.equal(check(report,'bus_service').code,'bus_running');assert.equal(report.pairHealth.identity,'confirmed');assert.equal(report.pairHealth.roundtrip.codex_to_claude.status,'untested');
+ const main=await startMain(state,{adapters:[],quiet:true,intervalMs:0});t.after(()=>main.close());const before=await tree(f.c.installRoot);const report=await api.diagnoseInstallation(f.c,{env:{},connectionDeps:{discover:async()=>[]}});assert.equal(check(report,'bus_service').code,'bus_running');assert.equal(report.pairHealth.identity,'confirmed');assert.equal(report.pairHealth.roundtrip.codex_to_claude.status,'untested');assert.deepEqual(await tree(f.c.installRoot),before);
+ const bad=path.join(state,'lifecycle','executions');await mkdir(bad,{recursive:true});await writeFile(path.join(bad,'a'.repeat(64)+'.json'),'{}');const corrupt=await tree(f.c.installRoot);await api.diagnoseInstallation(f.c,{env:{},connectionDeps:{discover:async()=>[]}});assert.deepEqual(await tree(f.c.installRoot),corrupt,'diagnostic errors must not write bus.log or create directories');
+ try{await unlink(path.join(state,'diagnostic-endpoint.json'));}catch(e:any){if(e.code!=='ENOENT')throw e;}const old=await tree(f.c.installRoot),legacy=await api.diagnoseInstallation(f.c,{env:{},connectionDeps:{discover:async()=>[]}});assert.equal(check(legacy,'bus_service').code,'bus_diagnostic_protocol_unverified');assert.deepEqual(await tree(f.c.installRoot),old);
+});
+
+test('doctor reports orphan routes even when the active pointer is missing',async t=>{
+ const f=await fixture(t);await mkdir(f.c.installRoot);await writeFile(path.join(f.c.installRoot,'routes.json'),JSON.stringify({schemaVersion:1,routes:[{provider:'claude',sessionId:randomUUID(),connectionId:randomUUID()}]}));
+ const report=await api.diagnoseInstallation(f.c,{env:{}});assert.equal(check(report,'connection_routes').code,'connection_routes_require_check');assert.equal(report.diagnosticStatus,'needs_check');
 });

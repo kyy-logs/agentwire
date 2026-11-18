@@ -11,6 +11,9 @@ The user approved the short design in chat and requested exploration, a written 
 - Do not send probes while listing or switching. A restored identity pairing is not a newly observed roundtrip. Restored service is started lazily by the next explicit task.
 - Doctor reports independent installation, state-path, active routing/bindings, transition, service and endpoint checks with actionable error codes. Native trust and unobserved roundtrips stay unverified. Default doctor is read-only. `doctor --check-write` explicitly tests an existing install directory using a unique temporary file and removes it; it does not alter configuration or permissions.
 - Permission failures request native execution approval rather than changing permissions. Report the exact install root and runtime executable used by this execution.
+- Route-changing switch requires the caller's own native session environment and rejects mixed-provider execution contexts. Claude Skill substitution alone remains supported for read-only listing and legacy tasks, but is insufficient for switch; missing native provenance is an explicit P0 limitation, never repaired by setting environment variables.
+- Preview also seals both accepted-message ID sets. Inspect references and recovery artifacts, not merely terminal message states. Installed connection-scoped Bus IPC enforces the transition guard even for low-level clients.
+- Read-only service queries are used only after verifying a startup capability descriptor bound to the exact current IPC token. Unsupported/old services remain unverified; diagnostic errors must not log or create directories.
 
 ## Boundaries
 

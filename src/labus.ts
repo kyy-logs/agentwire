@@ -1,6 +1,6 @@
 import {parseArgs} from 'node:util';import path from 'node:path';import os from 'node:os';import {fileURLToPath} from 'node:url';import {readFile,stat} from 'node:fs/promises';import {randomUUID} from 'node:crypto';
 import {previewSetup,applySetup} from './installation/setup.ts';import {previewConfiguration,applyConfiguration,rollbackConfiguration,configurationRollbackOrder,inspectChatInstallation} from './installation/configuration.ts';import type {PathStore} from './installation/configuration.ts';
-import {discoverCandidates} from './installation/discovery.ts';import {readCallerSource} from './installation/source.ts';import {activeConnection,selectConnection,beginProbes,inspectConnection,askPeer,followupPeer,disconnect} from './installation/connections.ts';
+import {discoverCandidates} from './installation/discovery.ts';import {readCallerSource,readSwitchCallerSource} from './installation/source.ts';import {activeConnection,selectConnection,beginProbes,inspectConnection,askPeer,followupPeer,disconnect} from './installation/connections.ts';
 import {serviceHealth} from './installation/service.ts';import {atomicBytes,jsonBytes,optional,safePath} from './installation/paths.ts';import {requestBus} from './ipc.ts';import {assertId} from './model.ts';import type {InstallContext,Provider} from './installation/model.ts';
 import {runPairCommand} from './pairing/cli.ts';import {inspectPairHealth} from './pairing/health.ts';
 import {listConnections,previewConnectionSwitch,applyConnectionSwitch} from './installation/connection-management.ts';
@@ -23,7 +23,7 @@ export async function runLabus(args:string[],io:Io=process,deps:Deps={}):Promise
  if(operation==='connect'){
  const sub=p[1]||'discover';if(sub!=='switch'&&(v.apply!==undefined||v.operation!==undefined))throw Error('unexpected_option');
  if(['list','switch'].includes(sub)&&Object.keys(v).some(k=>!['provider','source-session',...(sub==='switch'?['connection','apply','operation']:[])].includes(k)))throw Error('unexpected_option');
- const source=await caller();
+ const source=sub==='switch'?await readSwitchCallerSource(provider,env,v['source-session']):await caller();
  if(sub==='list'){emit({ok:true,operation,phase:'saved_connections',data:await listConnections(c,source,deps.connectionDeps),nextAction:'choose_exact_saved_pair_then_review_switch'});return 0;}
  if(sub==='switch'){if(!v.connection)throw Error('missing_connection');if(v.apply&&!v.operation||!v.apply&&v.operation)throw Error('reviewed_operation_ids_required');const r=v.apply?await applyConnectionSwitch(c,source,v.connection,v.operation!,deps.connectionDeps):await previewConnectionSwitch(c,source,v.connection,deps.connectionDeps);emit({ok:true,operation,phase:v.apply?'paired':'preview',data:r,nextAction:v.apply?'identity_restored_roundtrip_not_retested':'review_exact_endpoints_then_apply_with_operation_id'});return 0;}
  if(sub==='discover'){const target=source.provider==='codex'?'claude':'codex';emit({ok:true,operation,phase:'select_peer',data:{source,candidates:await discoverCandidates(c,target)},nextAction:'choose_peer_in_chat_then_connect_select'});return 0;}
