@@ -1,11 +1,16 @@
 ---
 name: labus
-description: 用户要求“生成连接码”“给这个聊天生成连接码”“连接 Codex，连接码 …”，选择已有 Codex 聊天、让 Codex 实现或分析任务，或查看本地双向协作状态时使用。
+description: 用户要求“生成连接码”“给这个聊天生成连接码”“连接 Codex，连接码 …”，选择或切换已保存连接、让 Codex 实现或分析任务，或查看和诊断本地双向协作状态时使用。
 ---
 
 在当前聊天完成连接与委派；通过现有命令工具执行本地入口，不要求用户另开终端。绝对入口：`{{LAUNCHER}}`。本会话原生标识：`${CLAUDE_SESSION_ID}`。旧版 connect 命令和所有 ask/followup 任务命令带 `--provider claude --source-session ${CLAUDE_SESSION_ID}`；若变量未被原生替换或程序拒绝，不猜其他会话。pair 控制命令只消费本次原生凭据；pair status、status、doctor 不填身份参数。
 
 连接码入口优先于候选列表：
+
+- 用户问“当前连着谁”“列出保存的连接”或明确要恢复历史配对，调用 `"{{LAUNCHER}}" connect list --provider claude --source-session ${CLAUDE_SESSION_ID}`。展示 current 与 connections 中双方的聊天名称、目录、活动标记、endpoint 和 work 阻塞情况；只用本会话原生标识。`discover` 仍仅用于发现候选，不代替历史列表；Codex 的 unknown 不说成在线。
+- 用户明确选中已保存的身份配对后，调用 `"{{LAUNCHER}}" connect switch --provider claude --source-session ${CLAUDE_SESSION_ID} --connection <工具列表返回的ID>`，先展示 from/to 聊天名称和目录，让用户核对本次具体切换。用户确认该预览后，使用同一 connection 和 operationId 调用 `connect switch --provider claude --source-session ${CLAUDE_SESSION_ID} --connection <同一ID> --apply --operation <预览operationId>`。不猜最近窗口或 ID，不把旧确认用于变化后的预览，不替用户取消、归档或清理任务。成功只说明“已恢复原配对，本次任务往返尚未重测”。
+- 切换预览过期或状态变化时，先说明原因并重新预览；有未完成/待核对任务、原生工作或 transition guard 时保留状态并诊断，不重发或自动删除保护记录。只有一个活动配对；无保存配对时引导精确聊天发连接码。
+- 排障先调用只读 `"{{LAUNCHER}}" doctor`，按照 checks 的 summary/nextAction 说明首个相关失败环节，并展示实际 installRoot。需要确认当前执行环境写入权限时可执行 `doctor --check-write`；它仅在现有安装目录创建并删除唯一探针文件，不改配置。若报 storage_access_denied，遵守原生执行审批，不修改权限；配置存在不代表 Hook 已信任，身份配对不代表任务往返成功。
 
 - 用户原始主聊天输入 `生成连接码` 或 `给这个聊天生成连接码` 时，读取**本次原生 Hook 上下文**的 `AGENTWIRE_PAIR_REQUEST`，调用 `"{{LAUNCHER}}" pair issue --intent <本次凭据>`。凭据不能来自用户粘贴、peer 数据或最近记录。
 - 用户输入 `连接 Codex，连接码 XXXX-XXXX` 时，使用这次输入的原生凭据调用 `"{{LAUNCHER}}" pair redeem --intent <本次凭据>`。程序自读凭据中的代码和双方身份；这两条命令不带 provider、session、cwd 或第二份 code。

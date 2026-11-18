@@ -7,6 +7,7 @@ const terminal=new Set(['completed','delivered','failed','expired','stopped']);
 const stateFor=(c:InstallContext,id:string)=>{assertId(id);return path.join(resolveLayout(c).connections,id,'state');};
 const recordFor=(c:InstallContext,id:string)=>{assertId(id);return path.join(resolveLayout(c).connections,id,'connection.json');};
 export async function readConnection(c:InstallContext,id:string):Promise<ConnectionRecord>{const f=await safePath(c.installRoot,recordFor(c,id)),r=JSON.parse(await readFile(f,'utf8'));if(![1,2].includes(r.schemaVersion)||r.connectionId!==id)throw Error('invalid_connection');for(const p of ['codex','claude']){if(r[p]?.provider!==p||!path.isAbsolute(r[p]?.workspaceRoot||''))throw Error('invalid_connection');assertId(r[p].sessionId);}
+ if(typeof r.createdAt!=='string'||!Number.isFinite(Date.parse(r.createdAt)))throw Error('invalid_connection');
  if(r.schemaVersion===1){assertId(r.probeIds?.forward);assertId(r.probeIds?.reverse);}else{if(r.admissionMode!=='identity-pair-v1'||r.pairing?.identity!=='confirmed'||!['pairing','paired','offline','needs_check','disconnected'].includes(r.phase)||'probeIds'in r)throw Error('invalid_connection');assertId(r.pairing.activationId);}return r;}
 const load=readConnection;
 async function save(c:InstallContext,r:ConnectionRecord){await safePath(c.installRoot,recordFor(c,r.connectionId));await atomicBytes(recordFor(c,r.connectionId),jsonBytes(r));return r;}

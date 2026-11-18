@@ -42,6 +42,8 @@ powershell -NoProfile -File .\install.ps1
 
 在目标 Claude 聊天输入「生成连接码」，再在目标 Codex 聊天以纯文本输入「连接 Claude，连接码 XXXX-XXXX」。新码一小时有效、一次使用，支持双方不同工作目录；反向发码使用程序返回的兑换句式。仍只允许一组活动配对，更换前应正常断开旧配对。原生执行审批继续生效，配对成功与实际任务往返分别验证，详见[配对验收](docs/PAIRING-ACCEPTANCE.md)。
 
+`codex/local-connections-p0` 开发分支进一步支持「列出这个聊天保存的连接」和已配对历史连接的预览、安全切换，以及分环节的 doctor 诊断；不在上述 v0.1.1 安装包或旧版用户 Skill 中。切换保留历史、检查在途工作，仍只维持一组活动配对，详见[本机连接管理 P0](docs/LOCAL-CONNECTIONS-P0.md)。
+
 ## 开始协作
 
 1. 打开想连接的两个聊天。

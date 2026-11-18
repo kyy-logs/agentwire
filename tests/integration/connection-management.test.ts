@@ -122,3 +122,8 @@ test('legacy admission holds the switch lock until IPC acceptance is resolved',a
  const sending=askPeer(f.c,f.source,'claude','blocked at ensure',randomUUID(),{ensure:async()=>{entered();await waiting;throw Error('fixture_end');}} as any).catch(e=>e.message);
  await inside;try{await assert.rejects(api.previewConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,f.deps),/installation_busy/);}finally{release();}assert.equal(await sending,'fixture_end');
 });
+
+test('malformed connection timestamps cannot break the entire saved list',async t=>{
+ const f=await savedPairs(t);const malformed={...f.pairs[1],createdAt:null};await f.save(malformed);
+ const result=await api.listConnections(f.c,f.source,f.deps);assert.equal(result.connections.length,1);assert.equal(result.errors[0].connectionId,f.pairs[1].connectionId);assert.equal(result.errors[0].code,'invalid_connection');
+});

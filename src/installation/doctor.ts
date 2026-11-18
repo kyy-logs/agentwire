@@ -48,5 +48,6 @@ export async function diagnoseInstallation(c:InstallContext,options:Options={}){
   for(const p of ['codex','claude'] as const)add(p+'_endpoint',endpoint[p]==='detected'?'ok':endpoint[p]==='offline'?'warning':'unverified',p+'_endpoint_'+endpoint[p],`${p} 精确端点观察: ${endpoint[p]}`,'open_or_resume_exact_chat_history_is_not_online_proof');
   if(connection.schemaVersion===2){try{pairHealth=await inspectPairHealth(c,connection,options.connectionDeps);}catch{add('roundtrip_evidence','error','connection_storage_requires_check');}}
  }
- return {paths,checks,installation,connection,pairHealth,phase:checks.some(x=>x.status==='error')?'needs_check':connection?.phase||'disconnected'};
+ const diagnosticStatus=checks.some(x=>x.status==='error')?'needs_check':'checked';
+ return {paths,checks,installation,connection,pairHealth,diagnosticStatus,phase:connection?.phase==='disconnected'&&!transition?'disconnected':diagnosticStatus==='needs_check'?'needs_check':connection?.phase||'disconnected'};
 }
