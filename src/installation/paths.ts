@@ -12,6 +12,7 @@ export async function safePath(root:string,file:string){
 export async function atomicBytes(file:string,bytes:Buffer|string){await mkdir(path.dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';const h=await open(tmp,'wx',0o600);try{await h.writeFile(bytes);await h.sync();}finally{await h.close();}try{await rename(tmp,file);}catch(e){await unlink(tmp).catch(()=>{});throw e;}}
 export const jsonBytes=(v:unknown)=>Buffer.from(JSON.stringify(v,null,2)+'\n');
 export function resolveLayout(c:InstallContext){const root=path.resolve(c.installRoot);return {root,runtime:path.join(root,'runtime'),bin:path.join(root,'bin'),install:path.join(root,'install'),connections:path.join(root,'connections'),routes:path.join(root,'routes.json'),logs:path.join(root,'logs')};}
+export async function assertNoConnectionSwitch(c:InstallContext){if(await optional(await safePath(c.installRoot,path.join(c.installRoot,'connection-transition.json'))))throw Error('connection_switch_requires_check');}
 export function deadPid(pid:unknown){if(!Number.isInteger(pid)||Number(pid)<=0)return false;try{process.kill(Number(pid),0);return false;}catch(e:any){return e.code==='ESRCH';}}
 export async function acquireLock(file:string){
  await safePath(path.dirname(file),file);await mkdir(path.dirname(file),{recursive:true});let handle;
