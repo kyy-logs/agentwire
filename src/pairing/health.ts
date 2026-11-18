@@ -1,4 +1,6 @@
 import path from 'node:path';
+import {readdir} from 'node:fs/promises';
+import {safePath} from '../installation/paths.ts';
 import {realClock} from '../model.ts';
 import {FileMessageStore} from '../store.ts';
 import {FileLifecycleStore} from '../lifecycle/store.ts';
@@ -24,7 +26,9 @@ export function assertPairAdmission(tx:PairTransaction,r:PairedConnectionRecord)
 export async function inspectPairHealth(c:InstallContext,r:PairedConnectionRecord,deps:PairDeps={}):Promise<PairHealth>{
  const health:PairHealth={identity:'confirmed',endpoint:await pairEndpoints(c,r,deps),roundtrip:{codex_to_claude:{status:'untested'},claude_to_codex:{status:'untested'}}};
  const root=path.join(c.installRoot,'connections',r.connectionId,'state'),messages=new FileMessageStore(root,realClock),life=new FileLifecycleStore(root),native=new IdentityStore(root,realClock);
- for(const parent of await messages.list()){
+ const directory=await safePath(c.installRoot,path.join(root,'messages'));let files:string[];try{files=await readdir(directory);}catch(e:any){if(e.code!=='ENOENT')throw e;files=[];}
+ for(const name of files.filter(n=>n.endsWith('.json')).sort()){
+  await safePath(c.installRoot,path.join(directory,name));const parent=await messages.get(name.slice(0,-5));if(!parent)throw Error('connection_storage_requires_check');
   const m=parent.message;if(m.schemaVersion!==2||m.kind==='reply'||!['codex','claude'].includes(m.from)||!['codex','claude'].includes(m.to)||m.sourceSessionId!==r[m.from as 'codex'|'claude'].sessionId||m.targetSessionId!==r[m.to as 'codex'|'claude'].sessionId||parent.state!=='completed'||parent.completion?.nativeOutcome!=='response_ended'||!parent.activeAttemptId||!parent.resultRef)continue;
   const result=await life.getResult(m.messageId),i=await native.get(parent.activeAttemptId),reply=await messages.get(parent.resultRef);
   if(!result||result.nativeOutcome!=='response_ended'||result.ref.provider!==m.to||result.ref.sessionId!==m.targetSessionId||!i||i.connectionId!==r.connectionId||i.messageId!==m.messageId||i.provider!==m.to||i.targetSessionId!==m.targetSessionId||i.sourceSessionId!==m.sourceSessionId||i.bodySha256!==digest(m.body)||i.nativeExecutionId!==result.ref.nativeExecutionId||i.phase!=='reply_committed'||!reply?.activeAttemptId)continue;

@@ -1,0 +1,23 @@
+const actions:Record<string,[string,string]>={
+ pairing_identity_unconfirmed:['本次配对输入尚未通过原生身份核验。','check_current_native_hook_request_and_expiry_do_not_guess_session'],
+ pairing_activation_requires_check:['配对激活状态需要核对，暂不能确认连接已建立。','doctor_then_inspect_exact_activation_routes_and_bindings_do_not_replay'],
+ active_connection_exists:['已有活动连接，尚未替换。','connect_list_then_review_idle_switch_or_disconnect'],
+ connection_switch_requires_check:['上次连接切换未确认完成，新的派发已暂停。','doctor_then_inspect_connection_transition_preserve_history_do_not_delete_guard'],
+ storage_access_denied:['当前执行环境无法访问 AgentWire 状态目录。','request_native_execution_approval_do_not_change_permissions'],
+ pairing_storage_access_denied:['当前执行环境无法写入配对状态。','request_native_execution_approval_do_not_change_permissions_or_replay_expired_request'],
+ connection_has_unfinished_tasks:['连接中仍有未完成或交付待核对的消息。','inspect_original_tasks_wait_or_reconcile_do_not_auto_stop_or_resend'],
+ connection_native_work_outstanding:['Bus 已结束等待，但原生 Agent 的工作尚无结束证据。','inspect_native_window_and_original_task_do_not_auto_archive'],
+ connection_storage_requires_check:['连接历史存在损坏、未处理事件或隔离记录。','doctor_then_inspect_original_connection_storage_do_not_clear_history'],
+ connection_bindings_require_check:['保存的原生会话绑定缺失或与目标连接不一致。','doctor_then_inspect_exact_saved_bindings_do_not_guess_session'],
+ connection_routes_require_check:['当前路由与活动连接不一致。','doctor_then_inspect_active_pointer_and_routes_do_not_overwrite'],
+ switch_preview_changed:['连接或绑定在预览后发生变化，旧预览未执行。','connect_list_then_create_a_new_switch_preview'],
+ switch_preview_expired:['切换预览已超过五分钟，未执行。','create_a_new_switch_preview'],
+ service_shutdown_unconfirmed:['无法确认本地 Bus 已正常停止，连接未完成切换。','doctor_then_inspect_original_bus_identity_and_transition_do_not_kill_vendor_agents'],
+ legacy_connection_requires_reconnect:['旧版探针连接不能直接恢复为身份配对。','keep_history_then_pair_exact_chats_with_a_new_connection_code'],
+ pairing_target_unavailable:['指定聊天当前未通过精确端点检查。','open_or_resume_exact_target_chat_then_recheck_do_not_select_latest'],
+ install_root_mismatch:['当前入口与指定的安装根目录不一致。','use_the_installed_absolute_launcher_then_doctor'],
+ connection_already_active:['所选连接已经是活动连接。','inspect_current_connection_no_switch_needed'],
+ source_session_mismatch:['当前聊天不属于所选连接。','connect_list_for_current_native_chat_do_not_supply_another_session_id'],
+ installation_busy:['另一项连接操作正在进行。','wait_then_inspect_status_before_retry'],
+};
+export function errorGuidance(code:string){const [summary,nextAction]=actions[code]||['操作尚未得到确认，请保留原状态并检查诊断。','doctor_then_inspect_original_error_do_not_blindly_retry'];return {summary,nextAction};}
