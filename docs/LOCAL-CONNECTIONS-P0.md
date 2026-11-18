@@ -41,4 +41,4 @@ doctor 的 `ok` 表示诊断命令成功返回，具体健康情况看 `checks`�
 
 离线测试使用临时用户目录、真实文件和测试 IPC，覆盖双向原生来源、预览/执行、身份保留、无探针、过期/变化、任务晚到、旧版互斥、退出不确定及中断保护。权限拒绝分支通过受控文件系统错误注入测试；不声称在所有 Windows ACL 环境实测。
 
-两端 Skill 做独立的命令选择场景检查；这不等于当前真实 Claude/DeepSeek 已加载新版 Skill。最终测试数量、结果和剩余边界在本次交付说明记录。用户级安装、Hook、当前连接及 GitHub Release 不在本次验证中变更。
+初次离线阶段两端 Skill 做独立的命令选择场景检查，该模拟不等于真实 Claude/DeepSeek 加载或往返验证。后续已在用户明确授权下更新本机安装并完成同一对真实聊天的历史恢复及恢复后正向往返；完整离线测试 324/324。反向往返在恢复前独立验证，不同聊天对迁移和真实 Desktop queue/start 尚未在本轮实测。阶段证据、修复及其范围见[真实窗口验收](LOCAL-CONNECTIONS-P0-LIVE-ACCEPTANCE.md)和[修复记录](LOCAL-CONNECTIONS-P0-REPAIR.md)。GitHub Release 保持原版本。

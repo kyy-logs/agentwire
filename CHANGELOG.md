@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — local connections and recovery
+
+- Add saved-connection listing, reviewed idle switching and independent read-only
+  diagnostic checks. Keep exact native identities and a durable transition guard.
+- Recognize proven pairing/switch control Stops without fabricating inputs or
+  capturing ordinary conversation. Preserve failures and ambiguous task ownership.
+- Allow explicit reconciliation of attempted expired information replies when exact
+  native delivery evidence exists; never replay them or revive expired tasks.
+- Guard disconnect admission, confirm shutdown and recheck work before removing
+  routes. Preserve state when shutdown or native delivery remains uncertain.
+- Add a guarded Codex queue pump that starts only an existing exact queue head on
+  the same client's loaded, idle thread. An independent stdio history reader does
+  not establish Desktop ownership; real Desktop queue/start remains unverified.
+
+Full Windows offline suite: 324 passed, zero failed/skipped. Original-chat history
+restore and a new forward round trip passed; reverse communication was verified
+separately before restoration. Different-pair migration was not retested. See
+[native acceptance](docs/LOCAL-CONNECTIONS-P0-LIVE-ACCEPTANCE.md) and
+[repair details](docs/LOCAL-CONNECTIONS-P0-REPAIR.md). Source development branch
+only; no new release archive or tag.
+
 ## Unreleased — one-time chat pairing
 
 - Stage explicit pairing requests in native Hook context, then verify the exact

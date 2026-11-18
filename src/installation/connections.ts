@@ -1,6 +1,6 @@
 import path from 'node:path';import {readFile,open,unlink} from 'node:fs/promises';import {randomUUID} from 'node:crypto';
 import {assertId,realClock} from '../model.ts';import type {MessageRecord} from '../model.ts';import {requestBus} from '../ipc.ts';import {FileMessageStore} from '../store.ts';import {FileLifecycleStore} from '../lifecycle/store.ts';
-import {discoverCandidates} from './discovery.ts';import {ensureService,serviceHealth,shutdownService} from './service.ts';import {optional,atomicBytes,jsonBytes,resolveLayout,safePath,acquireLock,assertNoConnectionSwitch} from './paths.ts';import type {Candidate,ConnectionRecord,PairedConnectionRecord,InstallContext,SourceRef,Provider} from './model.ts';import type {PairActivation,PairDeps} from '../pairing/model.ts';
+import {discoverCandidates} from './discovery.ts';import {ensureService,serviceHealth,shutdownService} from './service.ts';import {optional,atomicBytes,jsonBytes,resolveLayout,safePath,acquireLock,assertNoConnectionSwitch,deadPid} from './paths.ts';import type {Candidate,ConnectionRecord,PairedConnectionRecord,InstallContext,SourceRef,Provider} from './model.ts';import type {PairActivation,PairDeps} from '../pairing/model.ts';
 import {withPairState} from '../pairing/store.ts';import {assertPairAdmission,pairEndpoints} from '../pairing/health.ts';
 type Deps=PairDeps&{shutdown?:typeof shutdownService;connectionId?:string;archive?:boolean};
 const terminal=new Set(['completed','delivered','failed','expired','stopped']);
@@ -87,7 +87,19 @@ export async function askPeer(c:InstallContext,source:SourceRef,target:Provider,
 export async function followupPeer(c:InstallContext,source:SourceRef,replyId:string,body:string,outboundId:string,deps:Deps={}):Promise<MessageRecord>{const r=await activeConnection(c);if(deps.connectionId&&deps.connectionId!==r.connectionId)throw Error('retry_connection_changed');verifySource(r,source);const payload={messageId:outboundId,kind:'followup',from:source.provider,replyTo:replyId,body};if(r.schemaVersion===2)return sendPaired(c,r,source,source.provider==='codex'?'claude':'codex',payload,deps);return sendLegacy(c,r,source,payload,deps);}
 export async function disconnect(c:InstallContext,id:string,stopRequested=false,deps:Deps={}):Promise<ConnectionRecord>{await safePath(c.installRoot,c.installRoot);const release=await acquireLock(path.join(c.installRoot,'connection.lock'));try{await assertNoConnectionSwitch(c);return await disconnectLocked(c,id,stopRequested,deps);}finally{await release();}}
 async function disconnectLocked(c:InstallContext,id:string,stopRequested=false,deps:Deps={}):Promise<ConnectionRecord>{const r=await load(c,id),state=stateFor(c,id),records=await new FileMessageStore(state,realClock).list(),unfinished=records.filter(x=>!terminal.has(x.state));if(unfinished.length&&!stopRequested)throw Error('unfinished_tasks');if(unfinished.length){for(const taskId of new Set(unfinished.map(x=>x.message.taskId)))await call(state,'stop',{taskId});}
- const life=new FileLifecycleStore(state);let nativeOutstanding=false;for(const m of records){if(m.message.kind!=='reply'&&m.attempts>0&&!m.resultRef&&!await life.getResult(m.message.messageId))nativeOutstanding=true;}
- if(nativeOutstanding&&!deps.archive){r.phase='needs_check';r.errorCode='native_work_may_continue_keep_routes';return save(c,r);}await changeRoutes(c,r,true);
- try{const h=await serviceHealth(state);if((await (deps.shutdown||shutdownService)(h)).status!=='closed')throw Error('service_shutdown_unconfirmed');}catch(e:any){if(e.message==='service_shutdown_unconfirmed')throw e;if(!['ENOENT','ECONNREFUSED'].includes(e.code))throw e;}
- r.phase='disconnected';delete r.errorCode;return save(c,r);}
+ const {inspectConnectionWork}=await import('./connection-management.ts');
+ const work=await inspectConnectionWork(c,id);if(work.artifactsPending)throw Error('connection_storage_requires_check');if(work.unfinished||work.uncertain)throw Error('unfinished_tasks');
+ if(work.nativeOutstanding&&!deps.archive){r.phase='needs_check';r.errorCode='native_work_may_continue_keep_routes';return save(c,r);}
+ // The existing admission guard covers direct IPC as well as normal clients.
+ // Retain it on interrupted/unconfirmed disconnect, just as for a switch.
+ const guard=await safePath(c.installRoot,path.join(c.installRoot,'connection-transition.json')),marker=jsonBytes({schemaVersion:1,operationId:randomUUID(),from:id,phase:'disconnecting'});await atomicBytes(guard,marker);
+ try{const h=await serviceHealth(state);if((await (deps.shutdown||shutdownService)(h)).status!=='closed')throw Error('service_shutdown_unconfirmed');}catch(e:any){if(e.message==='service_shutdown_unconfirmed')throw e;if(!['ENOENT','ECONNREFUSED'].includes(e.code))throw e;
+  // IPC closes before in-flight writes and process exit. An unavailable socket
+  // cannot retire the routes while its managed service might still be running.
+  const bytes=await optional(await safePath(c.installRoot,path.join(c.installRoot,'install','runtime-active.json')));
+  if(bytes){const marker=JSON.parse(bytes.toString());if(marker.stateRoot===path.resolve(state)&&!deadPid(marker.pid))throw Error('service_shutdown_unconfirmed');}
+ }
+ const after=await inspectConnectionWork(c,id);if(after.artifactsPending)throw Error('connection_storage_requires_check');if(after.unfinished||after.uncertain)throw Error('unfinished_tasks');
+ if(after.nativeOutstanding&&!deps.archive){r.phase='needs_check';r.errorCode='native_work_may_continue_keep_routes';return save(c,r);}
+ await changeRoutes(c,r,true);r.phase='disconnected';delete r.errorCode;await save(c,r);
+ const actual=await optional(guard);if(!actual?.equals(marker))throw Error('connection_switch_requires_check');await unlink(guard);return r;}

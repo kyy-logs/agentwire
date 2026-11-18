@@ -7,4 +7,10 @@ test('same body different identity stays separate; wrong session cannot bind',as
 test('one transport mapped to multiple executions pauses rather than chooses latest',async t=>{const s=new IdentityStore(await temp(t),clock()),a=intent();await s.prepare(a);await s.bind(a.attemptId,identity(a));assert.equal(await s.bind(a.attemptId,identity(a)),'needs_check');assert.equal((await s.get(a.attemptId))?.phase,'needs_check');});
 test('one execution claimed by different attempts pauses both',async t=>{const s=new IdentityStore(await temp(t),clock()),a=intent(),b=intent({provider:aProvider()});b.targetSessionId=a.targetSessionId;await s.prepare(a);await s.prepare(b);const n=identity(a);await s.bind(a.attemptId,n);assert.equal(await s.bind(b.attemptId,{...n,transportId:b.transportId}),'needs_check');assert.equal((await s.get(a.attemptId))?.phase,'needs_check');assert.equal((await s.get(b.attemptId))?.phase,'needs_check');});
 function aProvider(){return 'codex' as const;}
+
+test('invalid durable queue-start metadata is rejected before persistence',async t=>{
+ const s=new IdentityStore(await temp(t),clock()),i=intent();await s.prepare(i);
+ for(const patch of [{submissionId:randomUUID(),status:'retry_anyway',attemptedAt:i.createdAt},{submissionId:randomUUID(),status:'attempted',attemptedAt:'invalid'},{submissionId:'not-an-id',status:'attempted',attemptedAt:i.createdAt}])await assert.rejects(s.advance(i.attemptId,'prepared',{queueStart:patch} as any));
+ assert.equal((await s.get(i.attemptId))?.queueStart,undefined);
+});
 test('restart preserves uncertain intent; immutable fields and stale transitions reject',async t=>{const root=await temp(t),s=new IdentityStore(root,clock()),a=intent();await s.prepare(a);await s.advance(a.attemptId,'prepared',{phase:'write_started'});await assert.rejects(s.advance(a.attemptId,'prepared',{phase:'queued'}),/stale/);await assert.rejects(s.advance(a.attemptId,'write_started',{transportId:randomUUID()}),/immutable/);const newer=new IdentityStore(root,clock());assert.deepEqual((await newer.recover()).corruptFiles,[]);assert.equal((await newer.get(a.attemptId))?.phase,'needs_check');});

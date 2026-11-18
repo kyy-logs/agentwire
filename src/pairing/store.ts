@@ -72,6 +72,10 @@ async function load(file:string):Promise<PairState>{
   let value;try{value=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b.subarray(0,r.bytesRead)));}catch{fail('pairing_store_invalid');}validState(value);return value;
  }finally{await h.close();}
 }
+/** Validated atomic snapshot only: no lock, expiry pruning, or write. */
+export async function readPairState(c:InstallContext):Promise<PairState>{
+ return load(await safePath(c.installRoot,path.join(c.installRoot,'pairing','state.json')));
+}
 /** All public mutations share connection.lock with connection activation.
  * Callers inside this callback must use tx.state/commit, never re-enter a public
  * pairing or connection operation that acquires the same non-reentrant lock.

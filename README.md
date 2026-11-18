@@ -44,6 +44,8 @@ powershell -NoProfile -File .\install.ps1
 
 `codex/local-connections-p0` 开发分支进一步支持「列出这个聊天保存的连接」和已配对历史连接的预览、安全切换，以及分环节的 doctor 诊断；不在上述 v0.1.1 安装包或旧版用户 Skill 中。切换保留历史、检查在途工作，仍只维持一组活动配对，详见[本机连接管理 P0](docs/LOCAL-CONNECTIONS-P0.md)。
 
+该分支包含后续的生命周期和断开恢复修复，完整离线测试 324/324。同一对原窗口的历史恢复及恢复后正向往返已验证，其他范围见[真实窗口验收](docs/LOCAL-CONNECTIONS-P0-LIVE-ACCEPTANCE.md)与[修复记录](docs/LOCAL-CONNECTIONS-P0-REPAIR.md)。源码试用时将上面 clone 命令的分支名改为 `codex/local-connections-p0`。
+
 ## 开始协作
 
 1. 打开想连接的两个聊天。

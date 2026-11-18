@@ -5,6 +5,9 @@ import {createClaudeEvidence} from './native/claude-evidence.ts';
 import {IdentityStore} from './native/identity-store.ts';
 import {NativeDispatcher} from './native/dispatcher.ts';
 import {CleanProcessor} from './lifecycle/clean-processor.ts';
+import {CodexQueuePump} from './native/codex-queue.ts';
+import {isPairControlExecution} from './pairing/lifecycle-control.ts';
+import {isSwitchControlExecution} from './installation/lifecycle-control.ts';
 import type {Provider,EvidenceReader,WireVersion} from './native/model.ts';
 import os from 'node:os';
 import {readFile,appendFile,readdir,access} from 'node:fs/promises';
@@ -79,12 +82,14 @@ export async function startMain(root:string,options:MainOptions={}){
     ];
     bus=new LocalBus({nativeDispatcher:dispatcher,connectionId:options.connectionId,newAutoWireVersion:options.newAutoWireVersion,store:new FileMessageStore(root,clock),bindings,adapters,clock,saveBindings:b=>atomicJson(path.join(root,'bindings.json'),{schemaVersion:1,bindings:b})});
     const report=await bus.recover();storageError=report.quarantinedFiles.length>0;await log('started',{recovery:report});
-    lifecycle=new LifecycleProcessor(bus,new FileLifecycleStore(root));await lifecycle.recover();
+    const controlExecution=installRoot?(async(ref:any)=>{const c={installRoot:installRoot!,home:os.homedir(),sourceRoot:installRoot!,nodeExe:process.execPath},id=options.connectionId||path.basename(path.dirname(root));return await isPairControlExecution(c,id,ref)||await isSwitchControlExecution(c,id,ref);}):undefined;
+    lifecycle=new LifecycleProcessor(bus,new FileLifecycleStore(root),controlExecution);await lifecycle.recover();
     clean=new CleanProcessor(bus,identities,lifecycle.store,readers);await clean.recover();
+    const queue=new CodexQueuePump(bus,nativeClient,admissionGuard);
     if(lifecycle.lastError||(await lifecycle.store.recover()).quarantined)storageError=true;
     const interval=options.intervalMs??500;
     await atomicJson(path.join(root,'diagnostic-endpoint.json'),{schemaVersion:1,operation:'diagnostic-health',instanceId,pid:process.pid,stateRoot:root,tokenSha256:createHash('sha256').update(await readFile(path.join(root,'auth.token'))).digest('hex')});
-    if(interval>0)timer=setInterval(()=>{if(working||closing||storageError)return;working=true;workerPromise=(async()=>{await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();})().catch(async()=>{storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
+    if(interval>0)timer=setInterval(()=>{if(working||closing||storageError)return;working=true;workerPromise=(async()=>{await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();})().catch(async()=>{storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
     if(options.signals!==false){process.on('SIGINT',signal);process.on('SIGTERM',signal);}
     if(!options.quiet)process.stdout.write(JSON.stringify({status:'running',stateRoot:root,recovery:report})+'\n');
     return {bus,lifecycle,clean,close};

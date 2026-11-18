@@ -9,6 +9,7 @@ import {validateResult,clipUtf8,digest,resultHeading} from './lifecycle/model.ts
 import type {CapturedResult} from './lifecycle/model.ts';
 type Options={store:MessageStore;adapters:AgentAdapter[];bindings:AgentBinding[];clock?:Clock;policy?:typeof defaultPolicy;saveBindings?:(b:AgentBinding[])=>Promise<void>;newAutoWireVersion?:'legacy'|'clean-v1';nativeDispatcher?:NativeDispatcher;connectionId?:string};
 const terminal=new Set(['completed','delivered','failed','expired','stopped']);
+const expiredReplyCheck=(r:MessageRecord)=>r.state==='expired'&&r.message.schemaVersion===2&&r.message.kind==='reply'&&r.attempts>0&&!!r.activeAttemptId;
 export class LocalBus {
   store:MessageStore;adapters:Map<string,AgentAdapter>;bindings:Map<string,AgentBinding>;clock:Clock;policy:typeof defaultPolicy;chain:Promise<unknown>=Promise.resolve();saveBindings?:Options['saveBindings'];
   nativeDispatcher?:NativeDispatcher;connectionId?:string;dispatchStopped=false;newAutoWireVersion:'legacy'|'clean-v1';
@@ -162,10 +163,10 @@ export class LocalBus {
       await this.update(r);
     }
   });}
-  async reconcileRecord(r:MessageRecord){
+  async reconcileRecord(r:MessageRecord,allowExpiredReply=false){
     const binding=this.binding(r.message.to);if(binding.sessionId!==r.message.targetSessionId)return r;
     const adapter=this.adapters.get(binding.kind);if(!adapter)return r;
-    if(r.message.schemaVersion===2){if(r.message.kind!=='reply'&&r.state==='needs_check'&&['background_pending','stop_continuation_unverified','captured_output_incomplete','missing_terminal_flags','multiple_terminal_events','native_result_identity_mismatch','native_result_incomplete','result_timeout_no_native_cancel'].includes(r.lastError||''))return r;if(!this.nativeDispatcher||!r.activeAttemptId)return r;const i=await this.nativeDispatcher.store.get(r.activeAttemptId);if(!i){r.state='needs_check';r.lastError='native_intent_missing';await this.update(r);return r;}const e=await this.nativeDispatcher.reconcile(i);if(e.status==='limit'){r.state='needs_check';r.lastError=e.errorCode||'native_read_limit';await this.update(r);return r;}if(e.status==='conflict'){r.state='needs_check';r.lastError=e.errorCode||'native_binding_conflict';await this.update(r);return r;}if((e.status==='mapped'||e.status==='delivered')&&['needs_check','submitted'].includes(r.state)){const evidenceRef=e.status==='mapped'?e.identity.evidenceRef:e.evidenceRef;r.state=r.message.kind==='reply'?'delivered':'submitted';r.receipt={status:'accepted',evidenceRef};r.submittedAt??=this.now();r.resultDeadlineAt??=new Date(Math.min(Date.parse(r.submittedAt)+this.policy.resultTimeoutMs,Date.parse(r.message.expiresAt))).toISOString();delete r.lastError;delete r.nextAttemptAt;await this.update(r);}return r;}
+    if(r.message.schemaVersion===2){const lateDelivery=allowExpiredReply&&expiredReplyCheck(r);if(r.message.kind!=='reply'&&r.state==='needs_check'&&['background_pending','stop_continuation_unverified','captured_output_incomplete','missing_terminal_flags','multiple_terminal_events','native_result_identity_mismatch','native_result_incomplete','result_timeout_no_native_cancel'].includes(r.lastError||''))return r;if(!this.nativeDispatcher||!r.activeAttemptId)return r;const i=await this.nativeDispatcher.store.get(r.activeAttemptId);if(!i){r.state='needs_check';r.lastError='native_intent_missing';await this.update(r);return r;}const e=await this.nativeDispatcher.reconcile(i);if(e.status==='limit'){r.state='needs_check';r.lastError=e.errorCode||'native_read_limit';await this.update(r);return r;}if(e.status==='conflict'){r.state='needs_check';r.lastError=e.errorCode||'native_binding_conflict';await this.update(r);return r;}if((e.status==='mapped'||e.status==='delivered')&&(['needs_check','submitted'].includes(r.state)||lateDelivery)){const evidenceRef=e.status==='mapped'?e.identity.evidenceRef:e.evidenceRef;r.state=r.message.kind==='reply'?'delivered':'submitted';if(lateDelivery)r.late=true;r.receipt={status:'accepted',evidenceRef};r.submittedAt??=this.now();r.resultDeadlineAt??=new Date(Math.min(Date.parse(r.submittedAt)+this.policy.resultTimeoutMs,Date.parse(r.message.expiresAt))).toISOString();delete r.lastError;delete r.nextAttemptAt;await this.update(r);}return r;}
     let result;try{result=await adapter.reconcile(binding,r);}catch{return r;}
     // An observed inbound confirms submission, never task completion. Only explicit reply completes work.
     if(result.status==='submitted'&&['needs_check','submitted'].includes(r.state)){
@@ -175,7 +176,7 @@ export class LocalBus {
     }
     return r;
   }
-  async check(id:string){return this.serial(async()=>{assertId(id);const r=await this.store.get(id);if(!r)throw new Error('message_not_found');if(['needs_check','submitted'].includes(r.state))await this.reconcileRecord(r);return r;});}
+  async check(id:string){return this.serial(async()=>{assertId(id);const r=await this.store.get(id);if(!r)throw new Error('message_not_found');if(['needs_check','submitted'].includes(r.state)||expiredReplyCheck(r))await this.reconcileRecord(r,true);return r;});}
   async stop(taskId:string){return this.serial(async()=>{assertId(taskId);const family=(await this.store.list()).filter(r=>r.message.taskId===taskId);if(!family.length)throw new Error('task_not_found');const root=family.find(r=>r.message.messageId===taskId);if(!root)throw new Error('missing_root');root.stoppedAt??=this.now();await this.update(root);for(const r of family)if(!terminal.has(r.state)){r.state='stopped';r.lastError='bus_stopped_native_agent_not_cancelled';await this.update(r);}});}
   async recover(){return this.serial(()=>this.store.recover(this.clock.now()));}
 }

@@ -5,7 +5,8 @@ import type {CapturedResult} from './model.ts';
 import type {LifecycleEvent,ExecutionRef,EventApplyResult} from './model.ts';
 export class LifecycleProcessor{
   bus:LocalBus;store:FileLifecycleStore;lastError?:string;
-  constructor(bus:LocalBus,store:FileLifecycleStore){this.bus=bus;this.store=store;}
+  private controlExecution?:(ref:ExecutionRef)=>Promise<boolean>;
+  constructor(bus:LocalBus,store:FileLifecycleStore,controlExecution?:(ref:ExecutionRef)=>Promise<boolean>){this.bus=bus;this.store=store;this.controlExecution=controlExecution;}
   process(e:LifecycleEvent){return this.bus.serial(()=>this.processOne(e));}
   async eligibleInput(e:LifecycleEvent|undefined){
     if(!e||e.phase!=='input'||!['task','followup'].includes(e.inputKind||'')||!e.messageId||!e.dispatchNonce)return;
@@ -38,7 +39,9 @@ export class LifecycleProcessor{
       await this.store.markApplied(e.eventKey);return {status:'applied'};
     }
     const execution=await this.store.getExecution(e);
-    if(!execution){const inputs=(await this.store.events()).filter(x=>x.phase==='input'&&x.provider===e.provider&&x.sessionId===e.sessionId&&x.nativeExecutionId===e.nativeExecutionId);if(inputs.length){await this.store.markApplied(e.eventKey);return {status:'ignored',reason:'non_auto_execution'};}return {status:'deferred',reason:'missing_input_binding'};}
+    if(!execution){const inputs=(await this.store.events()).filter(x=>x.phase==='input'&&x.provider===e.provider&&x.sessionId===e.sessionId&&x.nativeExecutionId===e.nativeExecutionId);if(inputs.length){await this.store.markApplied(e.eventKey);return {status:'ignored',reason:'non_auto_execution'};}
+      if(e.phase==='stop'&&!e.errorCode&&e.output===undefined&&!e.messageId&&!e.dispatchNonce&&!e.inputKind&&!e.backgroundPending&&!e.continuation&&!e.incomplete&&await this.controlExecution?.(e)){await this.store.markApplied(e.eventKey);return {status:'ignored',reason:'verified_control_execution'};}
+      return {status:'deferred',reason:'missing_input_binding'};}
     if(execution.phase==='needs_check')return {status:'needs_check',reason:execution.reason};
     const competing=(await this.store.events()).filter(x=>x.phase!=='input'&&x.provider===e.provider&&x.sessionId===e.sessionId&&x.nativeExecutionId===e.nativeExecutionId);
     if(competing.length>1){await this.store.markConflict(e,'multiple_terminal_events');await this.pause(e,'multiple_terminal_events');return {status:'needs_check',reason:'multiple_terminal_events'};}
