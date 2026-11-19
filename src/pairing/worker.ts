@@ -1,9 +1,9 @@
 import path from 'node:path';import os from 'node:os';
-import {readFile,unlink} from 'node:fs/promises';import {fileURLToPath} from 'node:url';
+import {fileURLToPath} from 'node:url';
 import {optional,atomicBytes,jsonBytes,acquireLock,deadPid,withInstallLock} from '../installation/paths.ts';
 import {notifyPairJob,reconcilePairNotification} from './notifications.ts';
 import {withPairOperation} from './operations.ts';
-import {spawnBackground} from '../installation/service.ts';
+import {spawnPairWorker} from './process.ts';
 import {automationPath,readAutomation,listPairJobs,readPairJob,updatePairJob,updatePairJobLocked,jobAuthorized,terminalJob,automationLock} from './jobs.ts';
 import {readPairState} from './store.ts';
 import {executePairRequest} from './executor.ts';
@@ -19,7 +19,7 @@ export async function inspectPairWorker(c:InstallContext){
 export async function schedulePairWorker(c:InstallContext,deps:WorkerDeps={}){
  return withInstallLock(c,async()=>{const release=await startLock(c);try{if(!(await readAutomation(c)).enabled)throw Error('pairing_automation_disabled');const marker=await inspectPairWorker(c);if(marker.active)return marker;
   const args=['--experimental-strip-types',path.join(c.installRoot,'runtime','src','pairing','worker.ts'),'--root',c.installRoot];
-  const child=await(deps.launch?deps.launch(args):spawnBackground(c.nodeExe,args,{out:path.join(c.installRoot,'logs','pair-worker.stdout.log'),err:path.join(c.installRoot,'logs','pair-worker.stderr.log')}));
+  let child;try{child=await(deps.launch?deps.launch(args):spawnPairWorker(c));}catch(e:any){if(Number.isSafeInteger(e.startedPid)&&e.startedPid>0)await atomicBytes(await automationPath(c,'worker.json'),jsonBytes({schemaVersion:1,pid:e.startedPid,phase:'starting'}));throw e;}
   await atomicBytes(await automationPath(c,'worker.json'),jsonBytes({schemaVersion:1,pid:child.pid,phase:'starting'}));return {active:true,pid:child.pid};
  }finally{await release();}});
 }

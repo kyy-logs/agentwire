@@ -54,3 +54,9 @@ test('a killed process leaves an applying checkpoint recoverable with the same a
  const child=await runChild(process.execPath,['--experimental-strip-types',script],{timeoutMs:10000});assert.equal(child.exitCode,75,child.stderr);const saved=(await readPairJob(f.c,id))!;assert.equal(saved.phase,'applying');assert.ok(saved.intentId);const first=JSON.parse(await readFile(f.file,'utf8')).activations[0].activationId;
  f.clock.value+=180000;await api.runPairWorker(f.c,f.deps);assert.equal((await readPairJob(f.c,id))!.phase,'succeeded');const state=JSON.parse(await readFile(f.file,'utf8'));assert.equal(state.activations.length,1);assert.equal(state.activations[0].activationId,first);
 });
+
+test('scheduler guards the exact worker PID when native launch outcome is uncertain',async t=>{
+ const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);
+ await assert.rejects(api.schedulePairWorker(f.c,{launch:async()=>{throw Object.assign(Error('pair_worker_launch_unconfirmed'),{startedPid:process.pid});}}),/pair_worker_launch_unconfirmed/);
+ const marker=await api.inspectPairWorker(f.c);assert.equal(marker.pid,process.pid);assert.equal(marker.phase,'starting');assert.equal(marker.active,true);
+});

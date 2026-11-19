@@ -10,7 +10,7 @@ import {inspectPairWorker} from '../pairing/worker.ts';
 import {inspectPairOperations} from '../pairing/operations.ts';
 import type {InstallContext,SetupPlan} from './model.ts';
 type Operation=SetupPlan&{files:{target:string;before:string|null;after:string;stage:string}[]};
-async function productFiles(root:string){const out:string[]=[];async function walk(rel:string){let entries;try{entries=await readdir(path.join(root,rel),{withFileTypes:true});}catch(e:any){if(e.code==='ENOENT')return;throw e;}for(const e of entries){const name=path.join(rel,e.name);if(e.isSymbolicLink())throw Error('symlink_not_allowed');if(e.isDirectory())await walk(name);else if(e.isFile()&&(/\.(ts|md|yaml|json|cmd)$/.test(e.name)))out.push(name);}}await walk('src');await walk('assets');for(const f of ['package.json']){await access(path.join(root,f));out.push(f);}return out.sort();}
+async function productFiles(root:string){const out:string[]=[];async function walk(rel:string){let entries;try{entries=await readdir(path.join(root,rel),{withFileTypes:true});}catch(e:any){if(e.code==='ENOENT')return;throw e;}for(const e of entries){const name=path.join(rel,e.name);if(e.isSymbolicLink())throw Error('symlink_not_allowed');if(e.isDirectory())await walk(name);else if(e.isFile()&&(/\.(ts|md|yaml|json|cmd|ps1)$/.test(e.name)))out.push(name);}}await walk('src');await walk('assets');for(const f of ['package.json']){await access(path.join(root,f));out.push(f);}return out.sort();}
 function opPath(c:InstallContext,id:string){assertId(id);return path.join(resolveLayout(c).install,'operations',id);}
 export async function previewSetup(c:InstallContext,options:{nodeVersion?:string}={}):Promise<SetupPlan>{
  if((await inspectPairWorker(c)).active)throw Error('active_pairing_worker');

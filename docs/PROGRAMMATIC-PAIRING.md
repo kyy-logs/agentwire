@@ -64,3 +64,9 @@ labus pair mode --mode manual --apply
 使用 JSON 文件，无 SQLite、额外 API 服务、新的常驻 daemon。安装更新与显式 opt-in 前，当前连接、运行时与用户配置均不变。
 
 离线测试能证明账本、精确人工来源拒绝规则、故障恢复、调度和通知协议调用；不能代替两端原窗口送达验收。特别是新未配对聊天、原窗口忙/重开及 Codex 队列消费，必须核对实际原生记录。当前文档不声称这些现场验收通过。
+
+## Windows launcher boundary
+
+`process.ts` loads the shipped fixed `launch-worker.ps1` through a short encoded entry. It resolves cmd/PowerShell in the system directory with an explicit trusted cwd; no peer text enters a shell command and no execution-policy configuration is changed. The worker is created suspended with explicit native breakaway. Its exact PID is durably registered before a permit lets it run. Creation/permit deadline is 3 seconds; helper wait is bounded at 3.5 seconds. A job that forbids breakaway fails closed, without WMI, scheduled tasks, elevation or another user.
+
+Isolated Windows tests cover long paths, Chinese/spaces, inherited process-only Restricted policy, survival after the owned Hook job closes, refusal when breakaway is forbidden, uncertain-start PID guards, and installer shipping. An abrupt helper death between suspended creation and receipt can leave a suspended process; arbitrary instruction-level crash cleanup is not guaranteed. These tests do not prove real native-window delivery.
