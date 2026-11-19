@@ -6,11 +6,15 @@ import {randomUUID} from 'node:crypto';
 import {assertId} from '../model.ts';
 import {hash,optional,safePath,atomicBytes,jsonBytes,resolveLayout,withInstallLock} from './paths.ts';
 import {runtimeIsActive} from './service.ts';
+import {inspectPairWorker} from '../pairing/worker.ts';
+import {inspectPairOperations} from '../pairing/operations.ts';
 import type {InstallContext,SetupPlan} from './model.ts';
 type Operation=SetupPlan&{files:{target:string;before:string|null;after:string;stage:string}[]};
 async function productFiles(root:string){const out:string[]=[];async function walk(rel:string){let entries;try{entries=await readdir(path.join(root,rel),{withFileTypes:true});}catch(e:any){if(e.code==='ENOENT')return;throw e;}for(const e of entries){const name=path.join(rel,e.name);if(e.isSymbolicLink())throw Error('symlink_not_allowed');if(e.isDirectory())await walk(name);else if(e.isFile()&&(/\.(ts|md|yaml|json|cmd)$/.test(e.name)))out.push(name);}}await walk('src');await walk('assets');for(const f of ['package.json']){await access(path.join(root,f));out.push(f);}return out.sort();}
 function opPath(c:InstallContext,id:string){assertId(id);return path.join(resolveLayout(c).install,'operations',id);}
 export async function previewSetup(c:InstallContext,options:{nodeVersion?:string}={}):Promise<SetupPlan>{
+ if((await inspectPairWorker(c)).active)throw Error('active_pairing_worker');
+ if((await inspectPairOperations(c)).active)throw Error('active_pairing_operation');
  const l=resolveLayout(c);await safePath(l.root,l.root);let version=options.nodeVersion;
  try{if(!version)version=(await promisify(execFile)(c.nodeExe,['--version'],{windowsHide:true,timeout:5000})).stdout.trim();}catch{throw Error('node_unavailable');}
  if(!/^v\d+\./.test(version!)||Number(version!.slice(1).split('.')[0])<24)throw Error('node_version');
@@ -31,6 +35,8 @@ export async function applySetup(c:InstallContext,id:string,options:{afterWrite?
  return withInstallLock(c,()=>applySetupOne(c,id,options));
 }
 async function applySetupOne(c:InstallContext,id:string,options:{afterWrite?:()=>Promise<void>}={}):Promise<SetupPlan>{
+ if((await inspectPairWorker(c)).active)throw Error('active_pairing_worker');
+ if((await inspectPairOperations(c)).active)throw Error('active_pairing_operation');
  const l=resolveLayout(c),file=path.join(opPath(c,id),'operation.json');await safePath(l.root,file);const op:Operation=JSON.parse(await readFile(file,'utf8'));if(op.operationId!==id||op.schemaVersion!==1)throw Error('operation_mismatch');
  const mf=path.join(l.install,'manifest.json'),raw=await optional(mf),manifest=raw?JSON.parse(raw.toString()):{schemaVersion:1,files:{}};
  for(const f of op.files){await safePath(l.root,f.target);await safePath(opPath(c,id),f.stage);const bytes=await readFile(f.stage);if(hash(bytes)!==f.after)throw Error('staging_hash_mismatch');const current=await optional(f.target),actual=current?hash(current):null;if(actual!==f.before&&actual!==f.after)throw Error('configuration_changed');}

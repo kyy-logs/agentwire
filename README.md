@@ -44,6 +44,12 @@ powershell -NoProfile -File .\install.ps1
 
 `codex/local-connections-p0` 开发分支进一步支持「列出这个聊天保存的连接」和已配对历史连接的预览、安全切换，以及分环节的 doctor 诊断；不在上述 v0.1.1 安装包或旧版用户 Skill 中。切换保留历史、检查在途工作，仍只维持一组活动配对，详见[本机连接管理 P0](docs/LOCAL-CONNECTIONS-P0.md)。
 
+若发码时出现 `UserPromptSubmit ... timed out ... output discarded`，请参考[配对 Hook 超时排障](docs/PAIRING-HOOK-TIMEOUT.md)。配对凭据来自当前回合 Hook 上下文，不是环境变量；开发分支将 Claude 输入 Hook 的默认预算延长到 15 秒，升级保留其他 Hook 和权限。
+
+程序自动配对的本地开发实现见[自动配对说明](docs/PROGRAMMATIC-PAIRING.md)：由可信 Hook 启动受限短进程执行发码和兑换，模型无需调用配对工具。默认仍为 manual，须审阅范围后显式启用 auto；尚未发布，也不以离线测试代替原窗口通知验收。
+
+同一开发分支支持[用新连接码安全换绑](docs/PAIRING-REPLACEMENT.md)：当前聊天属于旧连接且旧连接空闲时，兑换新码会自动断开旧连接并保留历史；存在未完成或待核对工作时停止，不替用户取消任务。
+
 该分支包含后续的生命周期和断开恢复修复，完整离线测试 324/324。同一对原窗口的历史恢复及恢复后正向往返已验证，其他范围见[真实窗口验收](docs/LOCAL-CONNECTIONS-P0-LIVE-ACCEPTANCE.md)与[修复记录](docs/LOCAL-CONNECTIONS-P0-REPAIR.md)。源码试用时将上面 clone 命令的分支名改为 `codex/local-connections-p0`。
 
 ## 开始协作

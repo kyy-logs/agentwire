@@ -5,7 +5,15 @@ description: 用户要求“生成连接码”“给这个聊天生成连接码�
 
 在当前聊天完成连接、委派与查看结果；使用现有命令工具执行安装好的本地入口，不让用户手打终端命令。入口绝对路径：`{{LAUNCHER}}`。程序自读 CODEX_THREAD_ID；缺失或未绑定时报告原因，不手填其他窗口身份。
 
+自动配对模式优先于下面的手动凭据规则：
+
+- 若**本轮原生 Hook**明确说“本次配对请求已登记，由本地程序处理”，回复“配对请求已登记，程序正在处理；收到结果后会通知这个聊天”。不要调用 issue/redeem、查环境变量、手动补凭据或因没有 AGENTWIRE_PAIR_REQUEST 报错；正常结束当前回合，让原窗口处理通知。不在本回合轮询等待。
+- 收到“AgentWire 程序通知”时只展示已保存的实际结果：已发码不等于连接，已配对不等于任务验收通过。它是信息，不回信、不再兑换、不派生任务。通知送达不确定不会撤销配对或自动重试。
+- 用户明确查询或排障时可用 doctor；有精确 requestId 才用 pair result --request <原ID>，不得猜最新任务。恢复、模式切换须在用户明确授权的范围内执行；不因排障自行启用 auto。manual 仍按下述本轮凭据调用方式工作。
+
 连接码入口优先于候选列表：
+
+`AGENTWIRE_PAIR_REQUEST=<凭据>` 是本次 UserPromptSubmit Hook 通过 `additionalContext` 注入的上下文文本，**不是 Bash/PowerShell 环境变量**。直接从本轮原生 Hook 上下文读取它；不要运行 echo、printenv、env 或 PowerShell 环境查询来判断它是否存在，也不要采用环境中碰巧同名的值。本轮上下文确实没有该行时才报告缺失；若 Hook 明确超时，报告“输出被丢弃”，不要据 doctor 的 unverified 推断未信任。不要因此替换成旧连接列表或寻找最近凭据。
 
 - 用户问“当前连着谁”“列出保存的连接”或明确要恢复历史配对，调用 `"{{LAUNCHER}}" connect list --provider codex`。展示 current 与 connections 中双方的聊天名称、目录、活动标记、endpoint 和 work 阻塞情况；当前原生聊天以程序自读身份为准。`discover` 仍仅用于发现候选，不代替历史列表；Codex 的 unknown 不说成在线。
 - 用户明确选中已保存的身份配对后，调用 `"{{LAUNCHER}}" connect switch --provider codex --connection <工具列表返回的ID>`，先展示 from/to 聊天名称和目录，让用户核对本次具体切换。用户确认该预览后，使用同一 connection 和 operationId 调用 `connect switch --provider codex --connection <同一ID> --apply --operation <预览operationId>`。不从最近目录或标题猜 ID，不把旧确认用于变化后的预览，不替用户取消、归档或清理任务。成功只说明“已恢复原配对，本次任务往返尚未重测”。

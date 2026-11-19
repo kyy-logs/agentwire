@@ -1,6 +1,61 @@
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdir,writeFile,readFile} from 'node:fs/promises';import path from 'node:path';import {temp} from '../helpers.ts';
-import {previewConfiguration,applyConfiguration,rollbackConfiguration} from '../../src/installation/configuration.ts';
+import {previewConfiguration,applyConfiguration,rollbackConfiguration,configurationRollbackOrder} from '../../src/installation/configuration.ts';
+import {hash} from '../../src/installation/paths.ts';
+
+async function legacyHooks(t:any,claudeOnly=false){
+ const f=await fixture(t),p=await previewConfiguration(f.c,{pathStore:f.pathStore}),file=path.join(f.c.installRoot,'install','configuration',p.operationId,'operation.json'),op=JSON.parse(await readFile(file,'utf8'));
+ for(const entry of op.entries.filter((e:any)=>e.kind==='hook')){
+  const config=JSON.parse(await readFile(entry.stagedFile,'utf8'));for(const groups of Object.values(config.hooks) as any[])for(const group of groups)for(const h of group.hooks||[])h.timeout=5;
+  const bytes=Buffer.from(JSON.stringify(config,null,2)+'\n');await writeFile(entry.stagedFile,bytes);entry.after=hash(bytes);for(const groups of Object.values(entry.groups) as any[])for(const group of groups)for(const h of group.hooks)h.timeout=5;
+  op.changes.find((x:any)=>x.target===entry.target).afterSha256=entry.after;
+ }
+ if(claudeOnly){const target=path.join(f.c.home,'.claude','settings.json');op.entries=op.entries.filter((e:any)=>e.target===target);op.changes=op.changes.filter((e:any)=>e.target===target);}
+ await writeFile(file,JSON.stringify(op));await applyConfiguration(f.c,p.operationId,{pathStore:f.pathStore});return f;
+}
+
+test('Claude prompt Hook gets startup headroom without changing other events or permissions',async t=>{
+ const f=await fixture(t),p=await previewConfiguration(f.c,{pathStore:f.pathStore});await applyConfiguration(f.c,p.operationId,{pathStore:f.pathStore});
+ const config=JSON.parse(await readFile(path.join(f.c.home,'.claude','settings.json'),'utf8')),codex=JSON.parse(await readFile(path.join(f.c.home,'.codex','hooks.json'),'utf8'));
+ assert.equal(config.hooks.UserPromptSubmit[0].hooks[0].timeout,15);assert.equal(config.hooks.Stop[0].hooks[0].timeout,5);assert.equal(codex.hooks.UserPromptSubmit[0].hooks[0].timeout,5);assert.deepEqual(config.permissions,{test:true});
+});
+
+test('owned five-second Hook upgrades in place, preserves unrelated Hooks, and rolls back after unrelated edits',async t=>{
+ const f=await legacyHooks(t),file=path.join(f.c.home,'.claude','settings.json'),before=JSON.parse(await readFile(file,'utf8')),foreign={hooks:[{type:'command',command:'echo unrelated',timeout:2}]};before.hooks.UserPromptSubmit.unshift(foreign);await writeFile(file,JSON.stringify(before));
+ const plan=await previewConfiguration(f.c,{pathStore:f.pathStore});await applyConfiguration(f.c,plan.operationId,{pathStore:f.pathStore});const actual=JSON.parse(await readFile(file,'utf8'));
+ assert.equal(actual.hooks.UserPromptSubmit.length,2,'replace the owned definition, never run both');assert.deepEqual(actual.hooks.UserPromptSubmit[0],foreign);assert.equal(actual.hooks.UserPromptSubmit[1].hooks[0].timeout,15);assert.deepEqual(actual.permissions,before.permissions);assert.equal((await previewConfiguration(f.c,{pathStore:f.pathStore})).changes.length,0);
+ actual.extra='later edit';await writeFile(file,JSON.stringify(actual));await rollbackConfiguration(f.c,plan.operationId,{pathStore:f.pathStore});const restored=JSON.parse(await readFile(file,'utf8'));assert.equal(restored.extra,'later edit');assert.deepEqual(restored.hooks,before.hooks);assert.deepEqual(restored.permissions,before.permissions);
+ const again=await previewConfiguration(f.c,{pathStore:f.pathStore});await applyConfiguration(f.c,again.operationId,{pathStore:f.pathStore});const upgraded=JSON.parse(await readFile(file,'utf8'));assert.equal(upgraded.hooks.UserPromptSubmit.length,2);assert.equal(upgraded.hooks.UserPromptSubmit[1].hooks[0].timeout,15);assert.equal(upgraded.extra,'later edit');
+ const {runLabus}=await import('../../src/labus.ts');let result='';assert.equal(await runLabus(['uninstall','--apply'],{stdout:{write:s=>{result+=s;}},stderr:{write:()=>{}}},{context:f.c,pathStore:f.pathStore}),0,result);const removed=JSON.parse(await readFile(file,'utf8'));assert.deepEqual(removed.hooks.UserPromptSubmit,[foreign],'uninstall removes all owned versions, retaining the unrelated Hook');assert.equal(removed.extra,'later edit');
+});
+
+test('externally edited owned Hook cannot be silently replaced or duplicated',async t=>{
+ const f=await legacyHooks(t),file=path.join(f.c.home,'.claude','settings.json'),config=JSON.parse(await readFile(file,'utf8'));config.hooks.UserPromptSubmit[0].hooks[0].timeout=9;await writeFile(file,JSON.stringify(config));const before=await readFile(file);
+ await assert.rejects(previewConfiguration(f.c,{pathStore:f.pathStore}),/hook_changed_requires_review/);assert.deepEqual(await readFile(file),before);
+});
+
+test('additional same-command variants block upgrade even when an exact old or desired Hook exists',async t=>{
+ for(const variant of ['old','desired']){const f=await legacyHooks(t);if(variant==='desired'){const p=await previewConfiguration(f.c,{pathStore:f.pathStore});await applyConfiguration(f.c,p.operationId,{pathStore:f.pathStore});}
+  const file=path.join(f.c.home,'.claude','settings.json'),config=JSON.parse(await readFile(file,'utf8')),extra=structuredClone(config.hooks.UserPromptSubmit[0]);extra.hooks[0].timeout=9;config.hooks.UserPromptSubmit.push(extra);await writeFile(file,JSON.stringify(config));const before=await readFile(file);
+  await assert.rejects(previewConfiguration(f.c,{pathStore:f.pathStore}),/hook_changed_requires_review/);assert.deepEqual(await readFile(file),before);
+ }
+});
+
+test('uninstall follows an upgrade predecessor even after its last owned target is superseded',async t=>{
+ const f=await legacyHooks(t,true),plan=await previewConfiguration(f.c,{pathStore:f.pathStore});await applyConfiguration(f.c,plan.operationId,{pathStore:f.pathStore});const {runLabus}=await import('../../src/labus.ts');let result='';
+ assert.equal(await runLabus(['uninstall','--apply'],{stdout:{write:s=>{result+=s;}},stderr:{write:()=>{}}},{context:f.c,pathStore:f.pathStore}),0,result);
+ const settings=JSON.parse(await readFile(path.join(f.c.home,'.claude','settings.json'),'utf8'));assert.equal(settings.hooks.UserPromptSubmit,undefined);assert.deepEqual(settings.permissions,{test:true});
+});
+
+for(const partial of ['apply','rollback'])test('uninstall recovers an interrupted Hook upgrade '+partial+' without a false ownership cycle',async t=>{
+ const f=await legacyHooks(t);for(const provider of ['codex','claude'])await writeFile(path.join(f.c.sourceRoot,'assets','skills',provider,'labus','SKILL.md'),'---\nname: labus\ndescription: updated\n---\n{{LAUNCHER}}');
+ const plan=await previewConfiguration(f.c,{pathStore:f.pathStore});
+ if(partial==='apply')await assert.rejects(applyConfiguration(f.c,plan.operationId,{pathStore:f.pathStore,afterWrite:async()=>{throw Error('fixture_interrupted');}}),/fixture_interrupted/);
+ else{await applyConfiguration(f.c,plan.operationId,{pathStore:f.pathStore});const opFile=path.join(f.c.installRoot,'install','configuration',plan.operationId,'operation.json'),op=JSON.parse(await readFile(opFile,'utf8')),entry=op.entries[0],ownerFile=path.join(f.c.installRoot,'install','configuration-owner.json'),owner=JSON.parse(await readFile(ownerFile,'utf8'));await writeFile(entry.target,await readFile(entry.originalFile));owner.targets[entry.target]=op.previousOwners[entry.target];op.rolledBackTargets.push(entry.target);await writeFile(ownerFile,JSON.stringify(owner));await writeFile(opFile,JSON.stringify(op));}
+ assert.equal((await configurationRollbackOrder(f.c))[0],plan.operationId);
+ const {runLabus}=await import('../../src/labus.ts');let result='';assert.equal(await runLabus(['uninstall','--apply'],{stdout:{write:s=>{result+=s;}},stderr:{write:()=>{}}},{context:f.c,pathStore:f.pathStore}),0,result);
+ const settings=JSON.parse(await readFile(path.join(f.c.home,'.claude','settings.json'),'utf8'));assert.equal(settings.hooks.UserPromptSubmit,undefined);assert.deepEqual(settings.permissions,{test:true});
+});
 test('PATH write committed before timeout finishes install ownership and uninstall restores original',async t=>{
  const {c,pathStore}=await fixture(t);const original=await pathStore.get(),set=pathStore.set;
  pathStore.set=async value=>{await set(value);throw Object.assign(Error('setter timed out after committing'),{code:null,signal:'SIGTERM',killed:true});};

@@ -10,6 +10,7 @@ import {pairEndpoints,inspectPairHealth} from '../pairing/health.ts';
 import {errorGuidance} from './guidance.ts';
 import type {InstallContext,PairedConnectionRecord} from './model.ts';
 import type {PairDeps} from '../pairing/model.ts';
+import {readAutomation,listPairJobs} from '../pairing/jobs.ts';import {inspectPairWorker} from '../pairing/worker.ts';
 
 type Check={id:string;status:'ok'|'warning'|'error'|'unverified';code:string;summary:string;nextAction:string};
 export async function probeInstallationWrite(root:string){
@@ -19,6 +20,8 @@ export async function probeInstallationWrite(root:string){
 type Options={env?:Record<string,string|undefined>;checkWrite?:boolean;connectionDeps?:PairDeps;probeWrite?:typeof probeInstallationWrite};
 export async function diagnoseInstallation(c:InstallContext,options:Options={}){
  const env=options.env||process.env,checks:Check[]=[];
+ let automation:any;
+ try{const a=await readAutomation(c);automation={mode:a.enabled?'auto':'manual',worker:await inspectPairWorker(c),jobs:(await listPairJobs(c)).map(j=>({requestId:j.requestId,phase:j.phase,notification:j.notification.phase,errorCode:j.errorCode}))};}catch{automation={errorCode:'pairing_automation_requires_check'};}
  const add=(id:string,status:Check['status'],code:string,summary?:string,nextAction?:string)=>{const guidance=errorGuidance(code);checks.push({id,status,code,summary:summary||guidance.summary,nextAction:nextAction||guidance.nextAction});};
  const capture=async(id:string,fn:()=>Promise<unknown>,code:string)=>{try{await fn();add(id,'ok','verified','检查通过。','none');return true;}catch(e:any){const actual=['EPERM','EACCES'].includes(e.code)?'storage_access_denied':/^[a-z_]+$/.test(e.message||'')?e.message:code;add(id,'error',actual);return false;}};
  const paths={home:c.home,installRoot:path.resolve(c.installRoot),runtimeRoot:path.join(c.installRoot,'runtime'),nodeExe:c.nodeExe,nodeVersion:process.versions.node,pinnedRoot:env.AGENTWIRE_INSTALL_ROOT||null,localAppData:env.LOCALAPPDATA||null};
@@ -49,5 +52,5 @@ export async function diagnoseInstallation(c:InstallContext,options:Options={}){
   if(connection.schemaVersion===2){try{pairHealth=await inspectPairHealth(c,connection,options.connectionDeps);}catch{add('roundtrip_evidence','error','connection_storage_requires_check');}}
  }
  const diagnosticStatus=checks.some(x=>x.status==='error')?'needs_check':'checked';
- return {paths,checks,installation,connection,pairHealth,diagnosticStatus,phase:connection?.phase==='disconnected'&&!transition?'disconnected':diagnosticStatus==='needs_check'?'needs_check':connection?.phase||'disconnected'};
+ return {paths,checks,installation,connection,pairHealth,automation,diagnosticStatus,phase:connection?.phase==='disconnected'&&!transition?'disconnected':diagnosticStatus==='needs_check'?'needs_check':connection?.phase||'disconnected'};
 }

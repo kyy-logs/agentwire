@@ -1,0 +1,17 @@
+import test from 'node:test';import assert from 'node:assert/strict';import path from 'node:path';import {mkdir,writeFile,readFile,readdir} from 'node:fs/promises';
+import {pairingFixture,stageNativeCommand} from '../pairing-helpers.ts';import {previewSetup,applySetup} from '../../src/installation/setup.ts';import {runLabus} from '../../src/labus.ts';import {diagnoseInstallation} from '../../src/installation/doctor.ts';import {setAutomation,readAutomation,enqueuePairJob} from '../../src/pairing/jobs.ts';import {recoverPairJob} from '../../src/pairing/worker.ts';
+test('active pairing worker blocks runtime preview, apply and uninstall',async t=>{
+ const f=await pairingFixture(t);await mkdir(path.join(f.c.sourceRoot,'src'),{recursive:true});await writeFile(path.join(f.c.sourceRoot,'package.json'),'{}');await writeFile(path.join(f.c.sourceRoot,'src','labus.ts'),'export {};');const plan=await previewSetup(f.c);
+ await writeFile(path.join(f.c.installRoot,'pairing','worker.json'),JSON.stringify({schemaVersion:1,pid:process.pid,phase:'accepting'}));
+ await assert.rejects(previewSetup(f.c),/active_pairing_worker/);await assert.rejects(applySetup(f.c,plan.operationId),/active_pairing_worker/);
+ let output='';assert.notEqual(await runLabus(['uninstall','--apply'],{stdout:{write:s=>output+=s},stderr:{write(){}}},{context:f.c}),0);assert.equal(JSON.parse(output).errorCode,'active_pairing_worker');
+});
+test('uninstall disables future pairing without removing history and doctor stays read-only',async t=>{
+ const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);const before=await readFile(f.file);let output='';assert.equal(await runLabus(['uninstall','--apply'],{stdout:{write:s=>output+=s},stderr:{write(){}}},{context:f.c}),0);assert.equal((await readAutomation(f.c)).enabled,false);assert.deepEqual(await readFile(f.file),before);
+ const other=await pairingFixture(t);const files=await readdir(other.c.installRoot);const report:any=await diagnoseInstallation(other.c,{env:{}});assert.equal(report.automation.mode,'manual');assert.equal(report.automation.worker.active,false);assert.deepEqual(await readdir(other.c.installRoot),files);assert.ok(!JSON.stringify(report.automation).includes(other.invitation.code));
+});
+test('explicit recovery excludes runtime update and uninstall before its Bus starts',async t=>{
+ const f=await pairingFixture(t);await mkdir(path.join(f.c.sourceRoot,'src'),{recursive:true});await writeFile(path.join(f.c.sourceRoot,'package.json'),'{}');await writeFile(path.join(f.c.sourceRoot,'src','labus.ts'),'export {};');const plan=await previewSetup(f.c);await setAutomation(f.c,true,f.deps);const id=await stageNativeCommand(f,f.peers[0],'连接 Claude，连接码 '+f.invitation.code);await enqueuePairJob(f.c,id,f.deps);let applied='not_checked',previewed='not_checked',uninstalled:any;
+ await recoverPairJob(f.c,id,{...f.deps,afterStep:async(s:string)=>{if(s!=='claimed')return;try{await applySetup(f.c,plan.operationId);applied='applied';}catch(e:any){applied=e.message;}try{await previewSetup(f.c);previewed='preview';}catch(e:any){previewed=e.message;}let output='';await runLabus(['uninstall','--apply'],{stdout:{write:s=>output+=s},stderr:{write(){}}},{context:f.c});uninstalled=JSON.parse(output);}});
+ assert.equal(applied,'active_pairing_operation');assert.equal(previewed,'active_pairing_operation');assert.equal(uninstalled.errorCode,'active_pairing_operation');
+});

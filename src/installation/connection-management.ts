@@ -95,7 +95,7 @@ export async function inspectConnectionRoutes(c:InstallContext,r?:ConnectionReco
   for(const route of value.routes){const p=route?.provider;if(!live||!['codex','claude'].includes(p)||seen.has(p)||route.connectionId!==r.connectionId||route.sessionId!==r[p as 'codex'|'claude'].sessionId)throw Error('invalid');seen.add(p);}
  }catch{throw Error('connection_routes_require_check');}
 }
-async function assertIdle(c:InstallContext,r:ConnectionRecord){
+export async function assertIdle(c:InstallContext,r:ConnectionRecord){
  let work;try{work=await inspectConnectionWork(c,r.connectionId);}catch{throw Error('connection_storage_requires_check');}
  if(work.unfinished||work.uncertain)throw Error('connection_has_unfinished_tasks');
  if(work.nativeOutstanding)throw Error('connection_native_work_outstanding');if(work.artifactsPending)throw Error('connection_storage_requires_check');
@@ -130,7 +130,7 @@ export async function previewConnectionSwitch(c:InstallContext,source:SourceRef,
   await atomicBytes(await safePath(c.installRoot,planFile(c,result.operationId)),jsonBytes(result));return result;
  },deps);
 }
-async function stopBus(c:InstallContext,r:ConnectionRecord,deps:SwitchDeps){
+export async function stopBus(c:InstallContext,r:ConnectionRecord,deps:SwitchDeps){
  const state=connectionState(c,r.connectionId);let h;
  try{h=await inspectService(state);}catch(e:any){
   if(!['ENOENT','ECONNREFUSED'].includes(e.code))throw Error('service_shutdown_unconfirmed');

@@ -45,6 +45,7 @@ function validState(s:any):asserts s is PairState{
  }
  if(new Set(s.invitations.map((x:any)=>x.code)).size!==s.invitations.length)fail('pairing_store_invalid');
  for(const a of s.activations){
+  if(a?.replacement!==undefined){const r=a.replacement;if(!object(r)||!id(r.connectionId)||r.connectionId===a.connectionId||!['pending','detached'].includes(r.phase)||!/^([a-f0-9]{64})$/.test(r.beforeSha256)||!/^([a-f0-9]{64})$/.test(r.afterSha256)||a.reuse!==undefined||a.phase==='paired'&&r.phase!=='detached')fail('pairing_store_invalid');}
   if(a?.reuse!==undefined&&(!object(a.reuse)||![1,2].includes(a.reuse.schemaVersion)||a.reuse.schemaVersion===2&&!id(a.reuse.activationId)||a.reuse.schemaVersion===1&&a.reuse.activationId!==undefined))fail('pairing_store_invalid');
   if(!object(a)||!id(a.connectionId)||!candidate(a.codex)||a.codex.provider!=='codex'||!candidate(a.claude)||a.claude.provider!=='claude'||!['activating','paired','needs_check'].includes(a.phase)||!stamp(a.createdAt)||(a.terminalAt!==undefined&&!stamp(a.terminalAt))||a.phase==='paired'&&!a.terminalAt||(a.errorCode!==undefined&&!/^[a-z_]{1,80}$/.test(a.errorCode)))fail('pairing_store_invalid');
   const inv=s.invitations.find((x:any)=>x.invitationId===a.invitationId),intent=s.intents.find((x:any)=>x.intentId===a.redeemIntentId);
@@ -128,11 +129,11 @@ export function inspectClaimLocked(tx:PairTransaction,intentId:string,deps:PairD
   if(inv.state==='claimed')fail('pairing_code_used');if(t>=Date.parse(inv.expiresAt))fail('pairing_code_expired');if(inv.state!=='available')fail('pairing_code_used');
   return {intent,inv};
 }
-export async function claimCodeLocked(tx:PairTransaction,intentId:string,deps:PairDeps={},connectionId?:string,reuse?:PairActivation['reuse']):Promise<PairActivation>{
+export async function claimCodeLocked(tx:PairTransaction,intentId:string,deps:PairDeps={},connectionId?:string,reuse?:PairActivation['reuse'],replacement?:PairActivation['replacement']):Promise<PairActivation>{
   const existing=tx.state.activations.find(a=>a.redeemIntentId===intentId);if(existing)return structuredClone(existing);
   const {intent,inv}=inspectClaimLocked(tx,intentId,deps),t=now(deps);
   const a:PairActivation={activationId:randomUUID(),invitationId:inv.invitationId,redeemIntentId:intentId,connectionId:connectionId??randomUUID(),codex:structuredClone(intent.source.provider==='codex'?intent.source:inv.issuer),claude:structuredClone(intent.source.provider==='claude'?intent.source:inv.issuer),phase:'activating',createdAt:new Date(t).toISOString(),...(reuse?{reuse:structuredClone(reuse)}:{})};
-  inv.state='claimed';inv.activationId=a.activationId;tx.state.activations.push(a);await tx.commit();return structuredClone(a);
+  if(replacement)a.replacement=structuredClone(replacement);inv.state='claimed';inv.activationId=a.activationId;tx.state.activations.push(a);await tx.commit();return structuredClone(a);
 }
 export async function completeActivation(c:InstallContext,activationId:string,deps:PairDeps={}):Promise<void>{
  return withPairState(c,tx=>completeActivationLocked(tx,activationId,deps),deps);
