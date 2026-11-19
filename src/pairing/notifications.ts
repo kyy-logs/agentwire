@@ -5,9 +5,17 @@ import {resolveClaude,postClaude} from '../adapters/claude.ts';
 import {createAppServer} from '../native/app-server.ts';import {createClaudeEvidence} from '../native/claude-evidence.ts';import {createCodexEvidence} from '../native/codex-evidence.ts';
 import type {DispatchIntent,Evidence,SearchAnchor} from '../native/model.ts';
 import type {InstallContext} from '../installation/model.ts';import type {PairDeps} from './model.ts';
+import type {PairJob} from './jobs.ts';
 import {readPairState} from './store.ts';import {automationPath,readPairJob,updatePairJob} from './jobs.ts';
 export type PairTransport={checkpoint?:(session:string)=>Promise<SearchAnchor>;send:(i:DispatchIntent,body:string)=>Promise<{status:string;errorCode?:string}>;inspect:(i:DispatchIntent)=>Promise<Evidence>;close?:()=>Promise<void>};
 type Deps=Pick<PairDeps,'now'>&{transport?:PairTransport};
+function notificationView(n:PairJob['notification']):PairJob['notification']{
+ if(n.phase!=='delivered'||typeof n.evidenceRef!=='string'||!n.evidenceRef.trim())return n;
+ const {errorCode,...settled}=n;
+ return {...settled,...(n.intent?{intent:{...n.intent,phase:'delivered',evidenceRef:n.evidenceRef}}:{})};
+}
+/** Historical write uncertainty cannot override a later proven delivery. No storage writes. */
+export const pairJobView=(j:PairJob):PairJob=>({...j,notification:notificationView(j.notification)});
 async function codexExecutable(){if(process.env.LOCAL_BUS_CODEX_EXE)return process.env.LOCAL_BUS_CODEX_EXE;if(process.platform==='win32'){const base=path.join(process.env.ProgramFiles||'C:/Program Files','WindowsApps');try{for(const n of (await readdir(base)).filter(n=>n.startsWith('OpenAI.Codex_')).sort().reverse()){const exe=path.join(base,n,'app','resources','codex.exe');try{await access(exe);return exe;}catch{}}}catch{}}return 'codex';}
 async function nativeTransport(c:InstallContext,provider:string):Promise<PairTransport>{
  if(provider==='claude'){const reader=createClaudeEvidence({claudeHome:path.join(c.home,'.claude')});return {inspect:i=>reader.inspect(i),send:async(i,body)=>{const e=await resolveClaude(i.targetSessionId,path.join(c.home,'.claude'));if(!e)return {status:'offline'};return postClaude(e,body,{uuid:i.transportId});}};}
@@ -25,7 +33,7 @@ async function notification(c:InstallContext,id:string,deps:Deps,write:boolean){
  try{let j=await readPairJob(c,id);if(!j||!j.result||!j.intentId||j.notification.phase==='delivered')return j;
  // A write checkpoint is sufficient for read-only reconciliation even after
  // the pairing core prunes its expired request/intent. Never use it to resend.
- if(j.notification.intent){const i=j.notification.intent;for(const value of [i.connectionId,i.messageId,i.attemptId,i.transportId,i.targetSessionId,i.sourceSessionId])assertId(value);if(!['codex','claude'].includes(i.provider)||i.transportId!==j.notification.transportId||i.messageId!==id||i.connectionId!==id||i.bodySha256!==hash(j.notification.body||''))throw Error('pairing_notification_invalid');transport=deps.transport||await nativeTransport(c,i.provider);const evidence=await transport.inspect(i);if(evidence.status==='mapped'||evidence.status==='delivered')j=await updatePairJob(c,{...j,notification:{...j.notification,phase:'delivered',evidenceRef:evidence.status==='mapped'?evidence.identity.evidenceRef:evidence.evidenceRef}});return j;}
+ if(j.notification.intent){const i=j.notification.intent;for(const value of [i.connectionId,i.messageId,i.attemptId,i.transportId,i.targetSessionId,i.sourceSessionId])assertId(value);if(!['codex','claude'].includes(i.provider)||i.transportId!==j.notification.transportId||i.messageId!==id||i.connectionId!==id||i.bodySha256!==hash(j.notification.body||''))throw Error('pairing_notification_invalid');transport=deps.transport||await nativeTransport(c,i.provider);const evidence=await transport.inspect(i);if(evidence.status==='mapped'||evidence.status==='delivered')j=await updatePairJob(c,{...j,notification:notificationView({...j.notification,phase:'delivered',evidenceRef:evidence.status==='mapped'?evidence.identity.evidenceRef:evidence.evidenceRef})});return j;}
  const state=await readPairState(c),request=state.requests.find(r=>r.requestId===id),intent=state.intents.find(i=>i.intentId===j!.intentId);
  if(!request||request.intentId!==j.intentId||!intent)throw Error('pairing_identity_unconfirmed');
  transport=deps.transport||await nativeTransport(c,intent.source.provider);
@@ -38,7 +46,7 @@ async function notification(c:InstallContext,id:string,deps:Deps,write:boolean){
   let receipt;try{receipt=await transport.send(dispatch,body);}catch{receipt={status:'unknown',errorCode:'notification_write_unknown'};}
   j=await updatePairJob(c,{...j,notification:{...j.notification,phase:receipt.status==='offline'?'offline':'needs_check',...(receipt.errorCode?{errorCode:receipt.errorCode}:{})}});
  }
- if(j.notification.intent){const evidence=await transport.inspect(j.notification.intent);if(evidence.status==='mapped'||evidence.status==='delivered')j=await updatePairJob(c,{...j,notification:{...j.notification,phase:'delivered',evidenceRef:evidence.status==='mapped'?evidence.identity.evidenceRef:evidence.evidenceRef}});}
+ if(j.notification.intent){const evidence=await transport.inspect(j.notification.intent);if(evidence.status==='mapped'||evidence.status==='delivered')j=await updatePairJob(c,{...j,notification:notificationView({...j.notification,phase:'delivered',evidenceRef:evidence.status==='mapped'?evidence.identity.evidenceRef:evidence.evidenceRef})});}
  return j;
  }finally{try{await transport?.close?.();}finally{await release();}}
 }
