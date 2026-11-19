@@ -34,3 +34,10 @@ test('result normalizes legacy delivered receipt without writing or trusting a b
  assert.deepEqual(await readFile(file),before);
  }
 });
+
+test('result projects an expired unstarted request without rewriting history or expiring an applying job',async t=>{
+ const {runPairCommand}=await import('../../src/pairing/cli.ts');const {updatePairJob}=await import('../../src/pairing/jobs.ts');const {readFile}=await import('node:fs/promises');const path=await import('node:path');
+ const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);const id=await stageNativeCommand(f,f.peers[0],'生成连接码');await enqueuePairJob(f.c,id,f.deps);const file=path.join(f.c.installRoot,'pairing/jobs',id+'.json');f.clock.value+=120001;
+ const query=async()=>{let text='';assert.equal(await runPairCommand(f.c,['result','--request',id],{stdout:{write:s=>text+=s}},f.deps),0);return JSON.parse(text);};const before=await readFile(file),expired=await query();assert.equal(expired.phase,'failed');assert.equal(expired.data.requestExpired,true);assert.equal(expired.data.job.errorCode,'pairing_intent_expired');assert.deepEqual(await readFile(file),before);assert.equal((await readPairJob(f.c,id))!.phase,'waiting_native');
+ const j=(await readPairJob(f.c,id))!;await updatePairJob(f.c,{...j,phase:'applying',intentId:f.issuer.intentId});const applyingBefore=await readFile(file),applying=await query();assert.equal(applying.phase,'applying');assert.equal(applying.data.job.errorCode,undefined);assert.deepEqual(await readFile(file),applyingBefore);
+});

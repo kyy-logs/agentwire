@@ -108,3 +108,11 @@ IPC health and state-changing requests are rejected with `bus_initializing_or_cl
 上述现场阶段的 384 项回归之后，状态及收据修复的完整离线回归为 388/388，失败、取消、跳过均为 0。安装后原成功请求保持 succeeded、重复请求保留 pairing_code_used；两者已有的通知均展示 delivered，历史账本字节不变。原模型对新查询的解释另行核对，不由离线通过代替。
 
 随后原 Claude 的独立只读接续已现场核对：实际执行两次指定 result 查询，均有成功工具结果；最终明确回答首次兑换成功、首次通知已送达、重复同码拒绝不影响原配对。自动采集正文与该原生最终回答一致。该项证明本次旧会话采用了新查询结果，不保证任意模型或未来会话都正确解释。
+
+## 入站 Hook 启动预算与失败查询
+
+两端 UserPromptSubmit 使用 15 秒预算，Stop、Interrupt、StopFailure 保持 5 秒。此前 Codex 外层只有 5 秒，PowerShell/Node 冷启动与后台执行器握手可能被截断，登记后留下未处理请求。Windows 自有 Job 隔离探针复现了这种残留；更长外层预算允许相同启动器完成。内部启动握手仍有原来的有限期限，15 秒不保证任意系统负载下都能启动。
+
+可捕获的启动异常只将尚未开始的请求记录为 pairing_worker_start_requires_check，并在本轮原生上下文保留精确的只读结果查询 ID；不执行手动兑换或自动重试，不覆盖已开始或已完成结果。若进程被外部直接终止、无法保存错误，result 查询对没有 intent/result 且已过期的 waiting_native 请求展示有效失败状态和 requestExpired；此显示不改写账本。已经 applying 或已经提交的配对不因初始请求期限经过而被取消。
+
+本次启动修复完整离线回归 392/392，失败、取消、跳过均为 0；独立审查未发现需修正问题。安装后以实际 15 秒配置和已安装启动器，在隔离 Windows Job 中加入 4 秒前置开销，假 worker 正常完成、没有残留启动锁；原过期请求查询明确返回 pairing_intent_expired，原账本字节未改。该隔离验收不代替真实原生窗口重新加载 Hook 与新一轮人工配对；旧过期输入不重放。

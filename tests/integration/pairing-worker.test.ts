@@ -60,3 +60,17 @@ test('scheduler guards the exact worker PID when native launch outcome is uncert
  await assert.rejects(api.schedulePairWorker(f.c,{launch:async()=>{throw Object.assign(Error('pair_worker_launch_unconfirmed'),{startedPid:process.pid});}}),/pair_worker_launch_unconfirmed/);
  const marker=await api.inspectPairWorker(f.c);assert.equal(marker.pid,process.pid);assert.equal(marker.phase,'starting');assert.equal(marker.active,true);
 });
+
+
+test('auto Hook persists a failed start and exposes exact read-only lookup without executing pairing',async t=>{
+ const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);const id=await stageNativeCommand(f,f.peers[0],'生成连接码'),state=JSON.parse(await readFile(f.file,'utf8')),event=state.requests.find(r=>r.requestId===id).event,before=await readFile(f.file);let output='';
+ assert.equal(await routeHook(f.c,'codex',[Buffer.from(JSON.stringify(event))],{...f.deps,stdout:{write:s=>output+=s},scheduleWorker:async()=>{throw Error('private_launch_details_should_not_leak');}} as any),0);
+ const j=(await readPairJob(f.c,id))!;assert.equal(j.phase,'needs_check');assert.equal(j.errorCode,'pairing_worker_start_requires_check');assert.equal(j.result.ok,false);assert.equal(j.intentId,undefined);assert.equal(j.notification.phase,'pending');assert.deepEqual(await readFile(f.file),before);assert.equal(f.sent.length,0);
+ const context=JSON.parse(output).hookSpecificOutput.additionalContext;assert.ok(context.includes('AGENTWIRE_PAIR_REQUEST_ID='+id));assert.ok(context.includes('pairing_worker_start_requires_check'));assert.ok(!context.includes('private_launch_details'));assert.ok(!context.includes('AGENTWIRE_PAIR_REQUEST='));assert.ok(!context.includes('pair issue --intent'));
+});
+
+test('late launch error cannot overwrite a worker result that already committed',async t=>{
+ const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);const id=await stageNativeCommand(f,f.peers[1],'生成连接码'),state=JSON.parse(await readFile(f.file,'utf8')),event=state.requests.find(r=>r.requestId===id).event;let output='';
+ await routeHook(f.c,'claude',[Buffer.from(JSON.stringify(event))],{...f.deps,stdout:{write:s=>output+=s},scheduleWorker:async()=>{await api.runPairWorker(f.c,f.deps);throw Error('late_launch_uncertainty');}} as any);
+ const j=(await readPairJob(f.c,id))!;assert.equal(j.phase,'succeeded');assert.equal(j.result.ok,true);assert.equal(j.errorCode,undefined);assert.ok(output.includes('AGENTWIRE_PAIR_REQUEST_ID='+id));
+});

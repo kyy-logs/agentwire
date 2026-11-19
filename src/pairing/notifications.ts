@@ -14,8 +14,11 @@ function notificationView(n:PairJob['notification']):PairJob['notification']{
  const {errorCode,...settled}=n;
  return {...settled,...(n.intent?{intent:{...n.intent,phase:'delivered',evidenceRef:n.evidenceRef}}:{})};
 }
-/** Historical write uncertainty cannot override a later proven delivery. No storage writes. */
-export const pairJobView=(j:PairJob):PairJob=>({...j,notification:notificationView(j.notification)});
+/** Read-only effective state: proven delivery and expiry before execution. No storage writes. */
+export function pairJobView(j:PairJob,now=Date.now()):PairJob{
+ const expired=j.phase==='waiting_native'&&!j.intentId&&!j.result&&now>=Date.parse(j.expiresAt);
+ return {...j,...(expired?{phase:'failed' as const,errorCode:'pairing_intent_expired',result:{ok:false,errorCode:'pairing_intent_expired'}}:{}),notification:notificationView(j.notification)};
+}
 async function codexExecutable(){if(process.env.LOCAL_BUS_CODEX_EXE)return process.env.LOCAL_BUS_CODEX_EXE;if(process.platform==='win32'){const base=path.join(process.env.ProgramFiles||'C:/Program Files','WindowsApps');try{for(const n of (await readdir(base)).filter(n=>n.startsWith('OpenAI.Codex_')).sort().reverse()){const exe=path.join(base,n,'app','resources','codex.exe');try{await access(exe);return exe;}catch{}}}catch{}}return 'codex';}
 async function nativeTransport(c:InstallContext,provider:string):Promise<PairTransport>{
  if(provider==='claude'){const reader=createClaudeEvidence({claudeHome:path.join(c.home,'.claude')});return {inspect:i=>reader.inspect(i),send:async(i,body)=>{const e=await resolveClaude(i.targetSessionId,path.join(c.home,'.claude'));if(!e)return {status:'offline'};return postClaude(e,body,{uuid:i.transportId});}};}
