@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {assertId,realClock} from '../model.ts';
 import {FileMessageStore} from '../store.ts';
 import {FileLifecycleStore,validateCleanHint} from '../lifecycle/store.ts';
-import {validateExecution,executionKey,digest} from '../lifecycle/model.ts';
+import {validateExecution,executionKey,eventKey,digest} from '../lifecycle/model.ts';
 import {IdentityStore} from '../native/identity-store.ts';
 import {activeConnection,readConnection} from './connections.ts';
 import {safePath,optional,atomicBytes,jsonBytes,hash,acquireLock,assertNoConnectionSwitch,deadPid} from './paths.ts';
@@ -27,22 +27,37 @@ async function names(c:InstallContext,dir:string){
 export async function inspectConnectionWork(c:InstallContext,id:string){
  const root=connectionState(c,id),store=new FileMessageStore(root,realClock),life=new FileLifecycleStore(root);
  const work={unfinished:0,uncertain:0,nativeOutstanding:0,artifactsPending:0};
+ const native=new IdentityStore(root,realClock),hints:any[]=[];
+ for(const e of await names(c,path.join(root,'lifecycle','clean-hints'))){
+  if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');
+  const file=await safePath(c.installRoot,path.join(root,'lifecycle','clean-hints',e.name)),h=JSON.parse(await readFile(file,'utf8'));validateCleanHint(h);
+  const {observedAt,...semantic}=h;if(digest(JSON.stringify(semantic))+'.json'!==e.name)throw Error('connection_storage_requires_check');hints.push(h);
+ }
+ const nativeEnded=async(r:any,intent?:any)=>{
+  if(r.message.schemaVersion!==2||r.returnMode!=='auto'||!['expired','stopped','failed'].includes(r.state)||!r.activeAttemptId||r.receipt?.status!=='accepted')return false;
+  const i=intent||await native.get(r.activeAttemptId);
+  if(!i||i.phase!=='mapped'||i.attemptId!==r.activeAttemptId||i.connectionId!==id||i.messageId!==r.message.messageId||i.provider!==r.message.to||i.targetSessionId!==r.message.targetSessionId||i.sourceSessionId!==r.message.sourceSessionId||!i.nativeExecutionId||!i.evidenceRef||r.receipt.evidenceRef!==i.evidenceRef)return false;
+  const ref={provider:i.provider,sessionId:i.targetSessionId,nativeExecutionId:i.nativeExecutionId};
+  if(await life.hasConflict(ref))return false;const execution=await life.getExecution(ref);if(execution?.phase==='needs_check')return false;
+  const exact=hints.filter(h=>h.provider===ref.provider&&h.sessionId===ref.sessionId&&h.nativeExecutionId===ref.nativeExecutionId);
+  if(exact.length!==1||[exact[0].backgroundPending,exact[0].continuation,exact[0].incomplete].some(v=>v!==false)||Date.parse(exact[0].observedAt)<Date.parse(i.createdAt))return false;
+  const ends=[];for(const phase of ['stop','failure','interrupt'] as const){await safePath(c.installRoot,life.file('events',eventKey(ref,phase)));const e=await life.getEvent(eventKey(ref,phase));if(e)ends.push(e);}if(ends.length!==1)return false;const e=ends[0];return e.phase===exact[0].phase&&![e.backgroundPending,e.continuation,e.incomplete].some(v=>v===true);
+ };
  const records=new Map();
  for(const e of await names(c,path.join(root,'messages'))){
   if(e.name.endsWith('.tmp')){work.artifactsPending++;continue;}if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');
   await safePath(c.installRoot,path.join(root,'messages',e.name));const r=await store.get(e.name.slice(0,-5));if(!r)throw Error('connection_storage_requires_check');records.set(r.message.messageId,r);
   if(!terminal.has(r.state))work.unfinished++;if(r.state==='needs_check')work.uncertain++;
-  if(r.message.kind!=='reply'&&r.attempts>0&&r.receipt?.status!=='rejected'&&!r.resultRef&&!await life.getResult(r.message.messageId))work.nativeOutstanding++;
+  if(r.message.kind!=='reply'&&r.attempts>0&&r.receipt?.status!=='rejected'&&!r.resultRef&&!await life.getResult(r.message.messageId)&&!await nativeEnded(r))work.nativeOutstanding++;
  }
  for(const r of records.values())if(r.resultRef){
   assertId(r.resultRef);const reply=records.get(r.resultRef),m=r.message,b=reply?.message;
   if(!b||b.kind!=='reply'||b.replyTo!==m.messageId||b.taskId!==m.taskId||b.from!==m.to||b.to!==m.from||m.schemaVersion===2&&(b.schemaVersion!==2||b.sourceSessionId!==m.targetSessionId||b.targetSessionId!==m.sourceSessionId))throw Error('connection_storage_requires_check');
  }
- const native=new IdentityStore(root,realClock);
  for(const e of await names(c,native.root)){
   if(e.name==='quarantine'||e.name.endsWith('.tmp')){work.artifactsPending++;continue;}if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');
   await safePath(c.installRoot,path.join(native.root,e.name));const i=await native.get(e.name.slice(0,-5));if(!i)throw Error('connection_storage_requires_check');
-  const r=records.get(i.messageId);if(!r)throw Error('connection_storage_requires_check');const settled=r.resultRef||r.message.kind==='reply'&&r.state==='delivered'&&r.receipt?.status==='accepted'&&r.receipt.evidenceRef;
+  const r=records.get(i.messageId);if(!r)throw Error('connection_storage_requires_check');const settled=r.resultRef||r.message.kind==='reply'&&r.state==='delivered'&&r.receipt?.status==='accepted'&&r.receipt.evidenceRef||await nativeEnded(r,i);
   if(i.phase==='needs_check'||!['not_written','reply_committed','delivered'].includes(i.phase)&&!settled)work.nativeOutstanding++;
  }
  for(const dir of ['quarantine','lifecycle/inbox','lifecycle/quarantine','lifecycle/conflicts'])work.artifactsPending+=(await names(c,path.join(root,dir))).length;

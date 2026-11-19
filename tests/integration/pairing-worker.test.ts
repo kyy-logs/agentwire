@@ -19,7 +19,7 @@ test('worker rejects expired requests and never resumes jobs from a previous ena
 test('auto Hook schedules exact request and does not give model a tool-execution ticket',async t=>{
  const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);const id=await stageNativeCommand(f,f.peers[1],'生成连接码'),s=JSON.parse(await readFile(f.file,'utf8')),r=s.requests.find((r:any)=>r.requestId===id);let called=0,output='';
  await routeHook(f.c,'claude',[Buffer.from(JSON.stringify(r.event))],{...f.deps,stdout:{write:(text:string)=>output+=text},scheduleWorker:async()=>{called++;}} as any);
- assert.equal(called,1);assert.ok(await readPairJob(f.c,id));assert.ok(!output.includes('AGENTWIRE_PAIR_REQUEST='));assert.ok(output.includes('程序处理'));assert.ok(!output.includes('pair issue --intent'));
+ assert.equal(called,1);assert.ok(await readPairJob(f.c,id));assert.ok(!output.includes('AGENTWIRE_PAIR_REQUEST='));assert.ok(output.includes('程序处理'));assert.ok(!output.includes('pair issue --intent'));assert.ok(output.includes('AGENTWIRE_PAIR_REQUEST_ID='+id),'auto context carries exact read-only result lookup ID');
 });
 test('claimed activation survives crash before job result and recovers after request expiry',async t=>{
  const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);const id=await stageNativeCommand(f,f.peers[0],'连接 Claude，连接码 '+f.invitation.code);await enqueuePairJob(f.c,id,f.deps);

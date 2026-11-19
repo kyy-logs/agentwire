@@ -162,3 +162,20 @@ test('paused Bus health blocks switching before shutdown even with empty task st
  const f=await savedPairs(t),main=await startMain(f.state(f.pairs[0]),{adapters:[],quiet:true,intervalMs:0});t.after(()=>main.close());main.lifecycle.lastError='fixture_storage_pause';let stopped=false;
  await assert.rejects(api.previewConnectionSwitch(f.c,f.source,f.pairs[1].connectionId,{...f.deps,shutdown:async()=>{stopped=true;return {status:'closed'};}}),/service_storage_requires_check/);assert.equal(stopped,false);assert.equal((await activeConnection(f.c)).connectionId,f.pairs[0].connectionId);
 });
+
+test('expired clean task with exact native terminal evidence is ended without becoming completed',async t=>{
+ const {IdentityStore}=await import('../../src/native/identity-store.ts');const {FileLifecycleStore}=await import('../../src/lifecycle/store.ts');
+ for(const mode of ['exact','wrong_turn','background','conflict','unmapped','event_incomplete','competing_event']){
+  const f=await savedPairs(t),root=f.state(f.pairs[0]),store=new FileMessageStore(root,realClock),life=new FileLifecycleStore(root),identities=new IdentityStore(root,realClock);
+  const id=randomUUID(),attemptId=randomUUID(),turn=randomUUID(),now=new Date().toISOString();
+  const message:any={...createTask({messageId:id,from:'codex',to:'claude',targetSessionId:f.pairs[0].claude.sessionId,body:'expired arithmetic'},realClock),schemaVersion:2,wireVersion:'clean-v1',sourceSessionId:f.self.sessionId,returnMode:'auto'};
+  const original=(await store.putNew(message)).record;await store.replace({...original,state:'expired',returnMode:'auto',attempts:1,activeAttemptId:attemptId,receipt:{status:'accepted',evidenceRef:'fixture:exact-turn'}});
+  await identities.prepare({schemaVersion:1,connectionId:f.pairs[0].connectionId,provider:'claude',targetSessionId:message.targetSessionId,sourceSessionId:f.self.sessionId,messageId:id,attemptId,transportId:randomUUID(),wireVersion:'clean-v1',bodySha256:'a'.repeat(64),createdAt:now,updatedAt:now,phase:mode==='unmapped'?'queued':'mapped',nativeExecutionId:turn,evidenceRef:'fixture:exact-turn'});
+  const ref={provider:'claude' as const,sessionId:message.targetSessionId,nativeExecutionId:mode==='wrong_turn'?randomUUID():turn};
+  const hint:any={schemaVersion:1,...ref,phase:'stop',observedAt:now,backgroundPending:mode==='background',continuation:false,incomplete:false};await life.enqueueCleanHint(hint);
+  await life.putEvent({...hint,...(mode==='event_incomplete'?{incomplete:true}:{}),eventKey:eventKey(ref,'stop')});await life.markApplied(eventKey(ref,'stop'));if(mode==='competing_event'){await life.putEvent({...hint,phase:'failure',eventKey:eventKey(ref,'failure')});await life.markApplied(eventKey(ref,'failure'));}if(mode==='conflict')await life.markConflict(ref,'multiple_terminal_events');
+  const before=await readFile(path.join(root,'messages',id+'.json'));const work=await api.inspectConnectionWork(f.c,f.pairs[0].connectionId);
+  if(mode==='exact')assert.equal(work.nativeOutstanding,0);else assert.ok(work.nativeOutstanding>0,mode);
+  assert.deepEqual(await readFile(path.join(root,'messages',id+'.json')),before);assert.equal((await store.get(id))!.state,'expired');assert.equal((await store.get(id))!.resultRef,undefined);
+ }
+});

@@ -1,7 +1,7 @@
 import path from 'node:path';import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {optional,atomicBytes,jsonBytes,acquireLock,deadPid,withInstallLock} from '../installation/paths.ts';
-import {notifyPairJob,reconcilePairNotification} from './notifications.ts';
+import {notifyPairJob,settlePairNotification} from './notifications.ts';
 import {withPairOperation} from './operations.ts';
 import {spawnPairWorker} from './process.ts';
 import {automationPath,readAutomation,listPairJobs,readPairJob,updatePairJob,updatePairJobLocked,jobAuthorized,terminalJob,automationLock} from './jobs.ts';
@@ -69,5 +69,5 @@ export async function recoverPairJob(c:InstallContext,id:string,deps:PairDeps={}
  }));
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- try{if(process.argv.length!==4||process.argv[2]!=='--root'||!path.isAbsolute(process.argv[3]))throw Error('invalid_arguments');const c={installRoot:process.argv[3],home:os.homedir(),sourceRoot:path.join(process.argv[3],'runtime'),nodeExe:process.execPath};await runPairWorker(c,{notify:async(c,id)=>{try{await notifyPairJob(c,id);for(let n=0;n<3;n++){const j=await readPairJob(c,id);if(!j?.notification.intent||j.notification.phase==='delivered')break;await pause(300);await reconcilePairNotification(c,id);}}catch{process.stderr.write('pair_notification_requires_check\n');}}});}catch(e:any){process.stderr.write('pair_worker_error '+(/^[a-z_]+$/.test(e.message||'')?e.message:'requires_check')+'\n');process.exitCode=1;}
+ try{if(process.argv.length!==4||process.argv[2]!=='--root'||!path.isAbsolute(process.argv[3]))throw Error('invalid_arguments');const c={installRoot:process.argv[3],home:os.homedir(),sourceRoot:path.join(process.argv[3],'runtime'),nodeExe:process.execPath};let notificationDeadline:number|undefined;await runPairWorker(c,{notify:async(c,id)=>{try{await notifyPairJob(c,id);notificationDeadline??=Date.now()+60000;await settlePairNotification(c,id,{maxWaitMs:Math.max(0,notificationDeadline-Date.now())});}catch{process.stderr.write('pair_notification_requires_check\n');}}});}catch(e:any){process.stderr.write('pair_worker_error '+(/^[a-z_]+$/.test(e.message||'')?e.message:'requires_check')+'\n');process.exitCode=1;}
 }

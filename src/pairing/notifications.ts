@@ -44,3 +44,17 @@ async function notification(c:InstallContext,id:string,deps:Deps,write:boolean){
 }
 export const notifyPairJob=(c:InstallContext,id:string,deps:Deps={})=>notification(c,id,deps,true);
 export const reconcilePairNotification=(c:InstallContext,id:string,deps:Deps={})=>notification(c,id,deps,false);
+
+/** Only inspect an already-written transport. Never creates or resends a notification. */
+export async function settlePairNotification(c:InstallContext,id:string,deps:Deps&{maxWaitMs?:number;sleep?:(ms:number)=>Promise<void>}={}){
+ const budget=deps.maxWaitMs??60000;if(!Number.isFinite(budget)||budget<0||budget>60000)throw Error('notification_wait_limit');
+ const now=()=>+(deps.now?.()||new Date()),started=now();let waited=0,delay=1000,j=await readPairJob(c,id);
+ if(!j?.notification.intent||j.notification.phase==='delivered')return j;
+ j=await reconcilePairNotification(c,id,deps);
+ while(j?.notification.intent&&j.notification.phase!=='delivered'){
+  const remaining=budget-Math.max(waited,now()-started);if(remaining<=0)break;
+  const ms=Math.min(delay,remaining);await(deps.sleep||((ms:number)=>new Promise<void>(done=>setTimeout(done,ms))))(ms);waited+=ms;delay=Math.min(delay*2,15000);
+  j=await reconcilePairNotification(c,id,deps);
+ }
+ return j;
+}
