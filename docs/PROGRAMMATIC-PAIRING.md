@@ -70,3 +70,7 @@ labus pair mode --mode manual --apply
 `process.ts` loads the shipped fixed `launch-worker.ps1` through a short encoded entry. It resolves cmd/PowerShell in the system directory with an explicit trusted cwd; no peer text enters a shell command and no execution-policy configuration is changed. The worker is created suspended with explicit native breakaway. Its exact PID is durably registered before a permit lets it run. Creation/permit deadline is 3 seconds; helper wait is bounded at 3.5 seconds. A job that forbids breakaway fails closed, without WMI, scheduled tasks, elevation or another user.
 
 Isolated Windows tests cover long paths, Chinese/spaces, inherited process-only Restricted policy, survival after the owned Hook job closes, refusal when breakaway is forbidden, uncertain-start PID guards, and installer shipping. An abrupt helper death between suspended creation and receipt can leave a suspended process; arbitrary instruction-level crash cleanup is not guaranteed. These tests do not prove real native-window delivery.
+
+## Service readiness
+
+IPC health and state-changing requests are rejected with `bus_initializing_or_closing` until recovery, diagnostic descriptor creation, timer assignment and signal handlers finish. A listening pipe alone does not make the service ready. This prevents an immediate shutdown from completing before startup later creates its polling timer. A deterministic blocked-recovery regression covers this ordering.

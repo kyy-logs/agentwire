@@ -37,7 +37,7 @@ async function codexExe(){
 }
 export async function startMain(root:string,options:MainOptions={}){
   const instanceId=randomUUID();
-  root=path.resolve(root);let clean:CleanProcessor|undefined,nativeClient:AppServerClient|undefined,workerPromise:Promise<void>|undefined;let bus:LocalBus|undefined,lifecycle:LifecycleProcessor|undefined,closing=false,working=false,storageError=false;const clock=options.clock||realClock;
+  root=path.resolve(root);let clean:CleanProcessor|undefined,nativeClient:AppServerClient|undefined,workerPromise:Promise<void>|undefined;let bus:LocalBus|undefined,lifecycle:LifecycleProcessor|undefined,closing=false,working=false,storageError=false,initialized=false;const clock=options.clock||realClock;
   let installRoot=options.installRoot;
   if(!installRoot&&path.basename(root)==='state'&&path.basename(path.dirname(path.dirname(root)))==='connections'){
     try{const r=JSON.parse(await readFile(path.join(path.dirname(root),'connection.json'),'utf8'));if(r.connectionId===path.basename(path.dirname(root))&&[1,2].includes(r.schemaVersion))installRoot=path.dirname(path.dirname(path.dirname(root)));}catch(e:any){if(e.code!=='ENOENT')throw e;}
@@ -49,7 +49,7 @@ export async function startMain(root:string,options:MainOptions={}){
     catch{storageError=true;if(!options.quiet)process.stderr.write(JSON.stringify({status:'storage_requires_check',errorCode:'log_write_failed'})+'\n');}
   };
   const ipc=await startIpc(root,async request=>{
-    if(!bus||closing)return {requestId:request.requestId,ok:false,errorCode:'bus_initializing_or_closing'};
+    if(!bus||closing||!initialized)return {requestId:request.requestId,ok:false,errorCode:'bus_initializing_or_closing'};
     const p=request.payload||{};
     try{
       let data:any;
@@ -91,6 +91,7 @@ export async function startMain(root:string,options:MainOptions={}){
     await atomicJson(path.join(root,'diagnostic-endpoint.json'),{schemaVersion:1,operation:'diagnostic-health',instanceId,pid:process.pid,stateRoot:root,tokenSha256:createHash('sha256').update(await readFile(path.join(root,'auth.token'))).digest('hex')});
     if(interval>0)timer=setInterval(()=>{if(working||closing||storageError)return;working=true;workerPromise=(async()=>{await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();})().catch(async(error)=>{if(error?.message==='connection_switch_requires_check')return;storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
     if(options.signals!==false){process.on('SIGINT',signal);process.on('SIGTERM',signal);}
+    initialized=true;
     if(!options.quiet)process.stdout.write(JSON.stringify({status:'running',stateRoot:root,recovery:report})+'\n');
     return {bus,lifecycle,clean,close};
   }catch(e){await close();throw e;}
