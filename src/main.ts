@@ -8,6 +8,7 @@ import {CleanProcessor} from './lifecycle/clean-processor.ts';
 import {CodexQueuePump} from './native/codex-queue.ts';
 import {isPairControlExecution} from './pairing/lifecycle-control.ts';
 import {isSwitchControlExecution} from './installation/lifecycle-control.ts';
+import {createNonTaskVerifier} from './installation/non-task-evidence.ts';
 import type {Provider,EvidenceReader,WireVersion} from './native/model.ts';
 import os from 'node:os';
 import {readFile,appendFile,readdir,access} from 'node:fs/promises';
@@ -83,7 +84,8 @@ export async function startMain(root:string,options:MainOptions={}){
     bus=new LocalBus({nativeDispatcher:dispatcher,connectionId:options.connectionId,newAutoWireVersion:options.newAutoWireVersion,store:new FileMessageStore(root,clock),bindings,adapters,clock,saveBindings:b=>atomicJson(path.join(root,'bindings.json'),{schemaVersion:1,bindings:b})});
     const report=await bus.recover();storageError=report.quarantinedFiles.length>0;await log('started',{recovery:report});
     const controlExecution=installRoot?(async(ref:any)=>{const c={installRoot:installRoot!,home:os.homedir(),sourceRoot:installRoot!,nodeExe:process.execPath},id=options.connectionId||path.basename(path.dirname(root));return await isPairControlExecution(c,id,ref)||await isSwitchControlExecution(c,id,ref);}):undefined;
-    lifecycle=new LifecycleProcessor(bus,new FileLifecycleStore(root),controlExecution);await lifecycle.recover();
+    const nonTaskExecution=installRoot?createNonTaskVerifier({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath},options.connectionId||path.basename(path.dirname(root))):undefined;
+    lifecycle=new LifecycleProcessor(bus,new FileLifecycleStore(root),controlExecution,nonTaskExecution);await lifecycle.recover();
     clean=new CleanProcessor(bus,identities,lifecycle.store,readers);await clean.recover();
     const queue=new CodexQueuePump(bus,nativeClient,admissionGuard);
     if(lifecycle.lastError||(await lifecycle.store.recover()).quarantined)storageError=true;

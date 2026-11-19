@@ -4,7 +4,15 @@ import {pairingFixture,stageNativeCommand} from '../pairing-helpers.ts';
 import {setAutomation,enqueuePairJob,readPairJob} from '../../src/pairing/jobs.ts';
 import {routeHook} from '../../src/installation/hook-router.ts';
 import path from 'node:path';import {pathToFileURL} from 'node:url';import {runChild} from '../../src/adapters/codex.ts';
+import {redeemCode} from '../../src/pairing/service.ts';
 const api:any=await import('../../src/pairing/worker.ts').catch(e=>{if(e.code==='ERR_MODULE_NOT_FOUND')return {};throw e;});
+
+for(const provider of ['codex','claude'] as const)test('auto Hook durably captures '+provider+' input before worker launch or failure',async t=>{
+ const f=await pairingFixture(t);await redeemCode(f.c,f.redeemer.intentId,f.deps);const main=[...f.services.values()][0];await setAutomation(f.c,true,f.deps);
+ const id=await stageNativeCommand(f,f.peers.find(p=>p.provider===provider)!,'生成连接码'),state=JSON.parse(await readFile(f.file,'utf8')),event=state.requests.find(r=>r.requestId===id).event;let invoked=false,captured:any;
+ await routeHook(f.c,provider,[Buffer.from(JSON.stringify(event))],{...f.deps,stdout:{write:()=>{}},scheduleWorker:async()=>{invoked=true;captured=await main.lifecycle.store.findInput({provider,sessionId:event.session_id,nativeExecutionId:provider==='codex'?event.turn_id:event.prompt_id});throw Error('fixture_launch_failure');}} as any);
+ assert.equal(invoked,true);assert.equal(captured?.inputKind,'ordinary','native input is already durable when worker is launched');assert.equal((await readPairJob(f.c,id))!.errorCode,'pairing_worker_start_requires_check');
+});
 test('worker waits for the exact native input without any model tools then exits',async t=>{
  const f=await pairingFixture(t);assert.equal(typeof api.runPairWorker,'function');await setAutomation(f.c,true,f.deps);
  const id=await stageNativeCommand(f,f.peers[1],'生成连接码');await enqueuePairJob(f.c,id,f.deps);const state=JSON.parse(await readFile(f.file,'utf8')),r=state.requests.find((r:any)=>r.requestId===id),file=r.event.transcript_path,bytes=await readFile(file);await writeFile(file,'');let waits=0;

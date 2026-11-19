@@ -6,12 +6,21 @@ import {randomUUID} from 'node:crypto';
 import {temp} from '../helpers.ts';
 import {hash} from '../../src/installation/paths.ts';
 import {startMain} from '../../src/main.ts';
+import {normalizeHook} from '../../src/lifecycle/normalize.ts';
+import {FileLifecycleStore} from '../../src/lifecycle/store.ts';
 
 const api:any=await import('../../src/installation/doctor.ts').catch(e=>{if(e.code==='ERR_MODULE_NOT_FOUND')return {};throw e;});
 const guidance:any=await import('../../src/installation/guidance.ts').catch(e=>{if(e.code==='ERR_MODULE_NOT_FOUND')return {};throw e;});
 async function fixture(t:any){const root=await temp(t),c={home:path.join(root,'home'),installRoot:path.join(root,'install'),sourceRoot:root,nodeExe:process.execPath};return {root,c};}
 const check=(report:any,id:string)=>{const row=report.checks.find((x:any)=>x.id===id);assert.ok(row,'check exists: '+id);return row;};
 async function tree(root:string):Promise<any>{const result:any={};for(const e of await readdir(root,{withFileTypes:true})){const file=path.join(root,e.name);result[e.name]=e.isDirectory()?await tree(file):hash(await readFile(file));}return result;}
+
+test('doctor reports exact pending lifecycle count without calling valid history corrupt or changing it',async t=>{
+ const f=await fixture(t),id=randomUUID(),peer=(provider:string)=>({provider,sessionId:randomUUID(),workspaceRoot:f.root,availability:'candidate'}),r={schemaVersion:2,admissionMode:'identity-pair-v1',connectionId:id,phase:'paired',codex:peer('codex'),claude:peer('claude'),createdAt:new Date().toISOString(),pairing:{activationId:randomUUID(),identity:'confirmed'}};
+ const dir=path.join(f.c.installRoot,'connections',id),life=new FileLifecycleStore(path.join(dir,'state'));await mkdir(dir,{recursive:true});await writeFile(path.join(dir,'connection.json'),JSON.stringify(r));await writeFile(path.join(f.c.installRoot,'active-connection.json'),JSON.stringify({connectionId:id}));
+ const e=normalizeHook('codex',{session_id:r.codex.sessionId,turn_id:randomUUID(),hook_event_name:'Stop'})!;await life.putEvent(e);const before=await tree(f.c.installRoot),report=await api.diagnoseInstallation(f.c,{env:{},connectionDeps:{discover:async()=>[]}});
+ assert.equal(report.connectionWork?.pendingLifecycleEvents.length,1);assert.equal(report.connectionWork.pendingLifecycleEvents[0].nativeExecutionId,e.nativeExecutionId);assert.match(check(report,'connection_work').summary,/1.*生命周期事件/);assert.doesNotMatch(check(report,'connection_work').summary,/损坏/);assert.deepEqual(await tree(f.c.installRoot),before);
+});
 
 test('doctor missing installation stays read-only and reports independent failures and actual paths',async t=>{
  assert.equal(typeof api.diagnoseInstallation,'function');const f=await fixture(t),before=await readdir(f.root),r=await api.diagnoseInstallation(f.c,{env:{}});

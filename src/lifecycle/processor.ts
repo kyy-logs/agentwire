@@ -3,10 +3,12 @@ import {FileLifecycleStore} from './store.ts';
 import {validateEvent,resultHeading,eventKey} from './model.ts';
 import type {CapturedResult} from './model.ts';
 import type {LifecycleEvent,ExecutionRef,EventApplyResult} from './model.ts';
+import type {NonTaskProof} from '../installation/non-task-evidence.ts';
 export class LifecycleProcessor{
   bus:LocalBus;store:FileLifecycleStore;lastError?:string;
   private controlExecution?:(ref:ExecutionRef)=>Promise<boolean>;
-  constructor(bus:LocalBus,store:FileLifecycleStore,controlExecution?:(ref:ExecutionRef)=>Promise<boolean>){this.bus=bus;this.store=store;this.controlExecution=controlExecution;}
+  private nonTaskExecution?:(event:LifecycleEvent)=>Promise<NonTaskProof|undefined>;
+  constructor(bus:LocalBus,store:FileLifecycleStore,controlExecution?:(ref:ExecutionRef)=>Promise<boolean>,nonTaskExecution?:(event:LifecycleEvent)=>Promise<NonTaskProof|undefined>){this.bus=bus;this.store=store;this.controlExecution=controlExecution;this.nonTaskExecution=nonTaskExecution;}
   process(e:LifecycleEvent){return this.bus.serial(()=>this.processOne(e));}
   async eligibleInput(e:LifecycleEvent|undefined){
     if(!e||e.phase!=='input'||!['task','followup'].includes(e.inputKind||'')||!e.messageId||!e.dispatchNonce)return;
@@ -41,6 +43,7 @@ export class LifecycleProcessor{
     const execution=await this.store.getExecution(e);
     if(!execution){const inputs=(await this.store.events()).filter(x=>x.phase==='input'&&x.provider===e.provider&&x.sessionId===e.sessionId&&x.nativeExecutionId===e.nativeExecutionId);if(inputs.length){await this.store.markApplied(e.eventKey);return {status:'ignored',reason:'non_auto_execution'};}
       if(e.phase==='stop'&&!e.errorCode&&e.output===undefined&&!e.messageId&&!e.dispatchNonce&&!e.inputKind&&!e.backgroundPending&&!e.continuation&&!e.incomplete&&await this.controlExecution?.(e)){await this.store.markApplied(e.eventKey);return {status:'ignored',reason:'verified_control_execution'};}
+      const proof=await this.nonTaskExecution?.(e);if(proof){await this.store.markApplied(e.eventKey,{reason:'verified_native_non_task',proof});return {status:'ignored',reason:'verified_native_non_task'};}
       return {status:'deferred',reason:'missing_input_binding'};}
     if(execution.phase==='needs_check')return {status:'needs_check',reason:execution.reason};
     const competing=(await this.store.events()).filter(x=>x.phase!=='input'&&x.provider===e.provider&&x.sessionId===e.sessionId&&x.nativeExecutionId===e.nativeExecutionId);

@@ -36,7 +36,7 @@ export class FileLifecycleStore{
   async getResult(id:string):Promise<CapturedResult|undefined>{const r=await this.read(this.resultFile(id));if(r){validateResult(r);if(r.messageId!==id||r.sha256!==digest(r.body))throw new Error('invalid_result_artifact');}return r;}
   async saveResult(r:CapturedResult){validateResult(r);const saved={...r,artifactRef:'lifecycle/results/'+r.messageId+'.json',sha256:digest(r.body)};const old=await this.getResult(r.messageId);if(old){if(!isDeepStrictEqual(old,saved))throw new Error('captured_result_conflict');return old;}await atomicJson(this.resultFile(r.messageId),saved,this.hooks.beforeRename);return saved;}
   async isApplied(key:string){return !!await this.read(this.file('applied',key));}
-  async markApplied(key:string){await atomicJson(this.file('applied',key),{eventKey:key},this.hooks.beforeRename);}
+  async markApplied(key:string,review?:{reason:string;proof:unknown}){await atomicJson(this.file('applied',key),{eventKey:key,...review},this.hooks.beforeRename);}
   async markConflict(ref:ExecutionRef,reason:string){await atomicJson(this.file('conflicts',executionKey(ref)),{reason},this.hooks.beforeRename);}
   async hasConflict(ref:ExecutionRef){return !!await this.read(this.file('conflicts',executionKey(ref)));}
   async enqueueCleanHint(h:CleanTerminalHint){validateCleanHint(h);const {observedAt,...semantic}=h;const key=digest(JSON.stringify(semantic));await atomicJson(this.file('clean-hints',key),h,this.hooks.beforeRename);}

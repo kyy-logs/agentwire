@@ -18,6 +18,11 @@ import type {PairDeps} from '../pairing/model.ts';
 const terminal=new Set(['completed','delivered','failed','expired','stopped']);
 const isId=(id:string)=>{try{assertId(id);return true;}catch{return false;}};
 export const connectionState=(c:InstallContext,id:string)=>{assertId(id);return path.join(c.installRoot,'connections',id,'state');};
+export async function pendingLifecycleEvents(c:InstallContext,id:string){
+ const root=connectionState(c,id),life=new FileLifecycleStore(root),out=[];
+ for(const e of await names(c,path.join(root,'lifecycle','events'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');await safePath(c.installRoot,path.join(root,'lifecycle','events',e.name));const event=await life.getEvent(e.name.slice(0,-5));if(!event)throw Error('connection_storage_requires_check');if(!await life.isApplied(event.eventKey))out.push({eventKey:event.eventKey,provider:event.provider,sessionId:event.sessionId,nativeExecutionId:event.nativeExecutionId,phase:event.phase});}
+ return out;
+}
 /** Unlike store.list(), inspection never creates absent directories. */
 async function names(c:InstallContext,dir:string){
  await safePath(c.installRoot,dir);let entries;try{entries=await readdir(dir,{withFileTypes:true});}catch(e:any){if(e.code==='ENOENT')return [];throw e;}
@@ -66,7 +71,7 @@ export async function inspectConnectionWork(c:InstallContext,id:string){
   const file=await safePath(c.installRoot,path.join(root,'lifecycle','executions',e.name));const execution=JSON.parse(await readFile(file,'utf8'));validateExecution(execution);if(executionKey(execution)+'.json'!==e.name||!records.has(execution.messageId))throw Error('connection_storage_requires_check');
   if(execution.replyMessageId){const reply=records.get(execution.replyMessageId);if(!reply||reply.message.kind!=='reply'||reply.message.replyTo!==execution.messageId)throw Error('connection_storage_requires_check');}if(execution.phase!=='applied')work.artifactsPending++;
  }
- for(const e of await names(c,path.join(root,'lifecycle','events'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');await safePath(c.installRoot,path.join(root,'lifecycle','events',e.name));const event=await life.getEvent(e.name.slice(0,-5));if(!event)throw Error('connection_storage_requires_check');if(!await life.isApplied(event.eventKey))work.artifactsPending++;}
+ work.artifactsPending+=(await pendingLifecycleEvents(c,id)).length;
  for(const e of await names(c,path.join(root,'lifecycle','clean-hints'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');const file=await safePath(c.installRoot,path.join(root,'lifecycle','clean-hints',e.name)),hint=JSON.parse(await readFile(file,'utf8'));validateCleanHint(hint);const {observedAt,...semantic}=hint;if(digest(JSON.stringify(semantic))+'.json'!==e.name)throw Error('connection_storage_requires_check');}
  for(const e of await names(c,path.join(root,'lifecycle','results'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');await safePath(c.installRoot,path.join(root,'lifecycle','results',e.name));const result=await life.getResult(e.name.slice(0,-5));if(!result||!records.has(result.messageId))throw Error('connection_storage_requires_check');}
  return work;
