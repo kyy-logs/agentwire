@@ -1,4 +1,4 @@
-# 程序自动配对（待原窗口验收）
+# 程序自动配对
 
 自动模式把发码、兑换交给受限本地程序。模型可以不调用任何配对工具；仍需用户在原生主聊天真实输入固定句式，Hook 已加载并受信任，且原生记录能证明来源。当前默认 `manual`，升级不会自动启用。
 
@@ -63,7 +63,7 @@ labus pair mode --mode manual --apply
 
 使用 JSON 文件，无 SQLite、额外 API 服务、新的常驻 daemon。安装更新与显式 opt-in 前，当前连接、运行时与用户配置均不变。
 
-离线测试能证明账本、精确人工来源拒绝规则、故障恢复、调度和通知协议调用；不能代替两端原窗口送达验收。特别是新未配对聊天、原窗口忙/重开及 Codex 队列消费，必须核对实际原生记录。当前文档不声称这些现场验收通过。
+离线测试能证明账本、精确人工来源拒绝规则、故障恢复、调度和通知协议调用；不能代替两端原窗口送达验收。特别是新未配对聊天、原窗口忙/重开及 Codex 队列消费，必须核对实际原生记录；下文分别列出本次现场已验证和仍待验证的范围。
 
 ## Windows launcher boundary
 
@@ -74,3 +74,24 @@ Isolated Windows tests cover long paths, Chinese/spaces, inherited process-only 
 ## Service readiness
 
 IPC health and state-changing requests are rejected with `bus_initializing_or_closing` until recovery, diagnostic descriptor creation, timer assignment and signal handlers finish. A listening pipe alone does not make the service ready. This prevents an immediate shutdown from completing before startup later creates its polling timer. A deterministic blocked-recovery regression covers this ordering.
+
+## 2026-11-19 本机验收记录
+
+本次在原 Codex Desktop 与原 Claude Code 聊天核对程序账本及精确原生回合，不以模型口头回执代替送达证据。
+
+| 范围 | 实际结果 |
+| --- | --- |
+| Claude 人工发码 → Codex 人工兑换 | 程序签发、兑换及双方程序通知已验证；模型未执行配对工具。 |
+| Codex → Claude 两轮任务 | 1763 → 1764，两个原始回复均为 delivered。 |
+| Claude → Codex 两轮任务 | Bus 更新重启后，3127 → 3128；第二轮关联第一轮回复，同一任务族，两个自动回复均在原 Claude 入站，状态 delivered。 |
+| 服务修复安装 | 正常关闭原 Bus，仅更新 main.ts，启动同一连接；Hook、权限、配对及历史受保护文件哈希不变。 |
+| 自动配对停用与恢复 | 官方命令 manual → auto，产生新 generation；旧请求未重新获准，空 worker 正常退出，连接、核心配对及旧任务账本不变。 |
+| Codex 人工发码 → Claude 人工兑换 | 尚待相反方向的真实人工输入；任务双向通过不能替代这项身份入口验收。 |
+
+一次旧反向 followup 继承的任务总预算仅剩约 82 秒，其 Stop 事件比截止时间晚 646 毫秒，最终 expired、未自动回传。本次保留该失败，没有重发、延长旧截止时间或将聊天中的答案算作成功。后续使用独立新任务族验证两轮通信。实际验收脚本应先检查剩余总预算，再安排接续。
+
+原 Claude 的 auto 模式曾拒绝执行由 peer 指定的 Temp 助手代码；该次未发送反向任务。用户在原 Claude 明确授权后，Claude 使用已安装 labus 入口提交算术任务。配对及 Bus 消息不会自动授予另一端工具执行权限。
+
+旧过期任务仍可能使 doctor 报告 connection_native_work_outstanding；它与新任务往返结果分开记录。没有用户明确选择，不自动归档或清除这些保护记录。本次不声称新目录、新聊天、两端真实退出重开、全部换绑场景都已现场通过。
+
+本阶段最近一次完整离线回归为 384/384，失败、取消、跳过均为 0；私有原生会话标识、聊天记录、配置备份和完整证据不纳入公开仓库。
