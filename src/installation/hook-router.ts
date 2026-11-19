@@ -13,7 +13,7 @@ export async function routeHook(c:InstallContext,provider:Provider,input:AsyncIt
  // or pairing; CLI consumption must verify the exact persisted native input.
  let ticket=await stagePairRequest(c,provider,event,deps);
  if(ticket&&(await readAutomation(c)).enabled){
-  await enqueuePairJob(c,ticket,deps);let startUnconfirmed=false;
+  await enqueuePairJob(c,ticket,{...deps,startupOwnerPid:process.pid});let startUnconfirmed=false;
   try{await ((deps as any).scheduleWorker||schedulePairWorker)(c);}catch{
    startUnconfirmed=true;
    // A launcher error can race with a worker that already committed. The same

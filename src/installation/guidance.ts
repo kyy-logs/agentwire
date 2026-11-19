@@ -1,4 +1,5 @@
 const actions:Record<string,[string,string]>={
+ pairing_worker_start_requires_check:['配对请求已登记，但后台执行器启动中断；未确认兑换成功。','inspect_exact_request_and_native_hook_definition_trust_do_not_redeem_or_retry_automatically'],
  pairing_identity_unconfirmed:['本次配对输入尚未通过原生身份核验。','check_current_native_hook_request_and_expiry_do_not_guess_session'],
  pairing_activation_requires_check:['配对激活状态需要核对，暂不能确认连接已建立。','doctor_then_inspect_exact_activation_routes_and_bindings_do_not_replay'],
  active_connection_exists:['已有活动连接，尚未替换。','connect_list_then_review_idle_switch_or_disconnect'],

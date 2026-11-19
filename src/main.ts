@@ -1,3 +1,4 @@
+import {reconcilePairStartup} from './pairing/worker.ts';
 import {createAppServer} from './native/app-server.ts';
 import type {AppServerClient} from './native/app-server.ts';
 import {createCodexEvidence} from './native/codex-evidence.ts';
@@ -91,7 +92,8 @@ export async function startMain(root:string,options:MainOptions={}){
     if(lifecycle.lastError||(await lifecycle.store.recover()).quarantined)storageError=true;
     const interval=options.intervalMs??500;
     await atomicJson(path.join(root,'diagnostic-endpoint.json'),{schemaVersion:1,operation:'diagnostic-health',instanceId,pid:process.pid,stateRoot:root,tokenSha256:createHash('sha256').update(await readFile(path.join(root,'auth.token'))).digest('hex')});
-    if(interval>0)timer=setInterval(()=>{if(working||closing||storageError)return;working=true;workerPromise=(async()=>{await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();})().catch(async(error)=>{if(error?.message==='connection_switch_requires_check')return;storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
+    let lastStartupScan=0,startupErrorLogged=false;
+    if(interval>0)timer=setInterval(()=>{if(working||closing)return;working=true;workerPromise=(async()=>{if(installRoot&&Date.now()-lastStartupScan>=1000){lastStartupScan=Date.now();try{await reconcilePairStartup({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath});}catch{if(!startupErrorLogged){startupErrorLogged=true;await log('pair_startup_monitor_requires_check');}}}if(storageError||closing)return;await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();})().catch(async(error)=>{if(error?.message==='connection_switch_requires_check')return;storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
     if(options.signals!==false){process.on('SIGINT',signal);process.on('SIGTERM',signal);}
     initialized=true;
     if(!options.quiet)process.stdout.write(JSON.stringify({status:'running',stateRoot:root,recovery:report})+'\n');

@@ -46,6 +46,8 @@ powershell -NoProfile -File .\install.ps1
 
 若发码时出现 `UserPromptSubmit ... timed out ... output discarded`，请参考[配对 Hook 超时排障](docs/PAIRING-HOOK-TIMEOUT.md)。配对凭据来自当前回合 Hook 上下文，不是环境变量；开发分支将两端输入 Hook 的默认预算统一为 15 秒，升级保留其他 Hook 和权限。
 
+若请求已登记却没有结果，见[启动中断检测与原生信任核对](docs/PAIRING-STARTUP-RECOVERY.md)。开发分支会独立识别执行器未启动的失败；修改文件中的超时不等于原聊天已经审核并加载新定义。
+
 程序自动配对的本地开发实现见[自动配对说明](docs/PROGRAMMATIC-PAIRING.md)：由可信 Hook 启动受限短进程执行发码和兑换，模型无需调用配对工具。默认仍为 manual，须审阅范围后显式启用 auto；尚未发布，也不以离线测试代替原窗口通知验收。
 
 同一开发分支支持[用新连接码安全换绑](docs/PAIRING-REPLACEMENT.md)：当前聊天属于旧连接且旧连接空闲时，兑换新码会自动断开旧连接并保留历史；存在未完成或待核对工作时停止，不替用户取消任务。

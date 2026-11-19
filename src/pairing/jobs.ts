@@ -8,7 +8,7 @@ import type {InstallContext} from '../installation/model.ts';
 import type {PairDeps} from './model.ts';
 
 export type Automation={schemaVersion:1;enabled:boolean;generation:string;enabledAt:string};
-export type PairJob={schemaVersion:1;requestId:string;generation:string;createdAt:string;expiresAt:string;revision:number;phase:'waiting_native'|'verified'|'applying'|'succeeded'|'failed'|'needs_check'|'disabled';intentId?:string;result?:any;errorCode?:string;notification:{phase:'pending'|'attempted'|'delivered'|'needs_check'|'offline';transportId?:string;body?:string;intent?:any;evidenceRef?:string;errorCode?:string}};
+export type PairJob={schemaVersion:1;requestId:string;generation:string;createdAt:string;expiresAt:string;revision:number;phase:'waiting_native'|'verified'|'applying'|'succeeded'|'failed'|'needs_check'|'disabled';intentId?:string;result?:any;errorCode?:string;startup?:{ownerPid:number;startedAt:string};notification:{phase:'pending'|'attempted'|'delivered'|'needs_check'|'offline';transportId?:string;body?:string;intent?:any;evidenceRef?:string;errorCode?:string}};
 export const terminalJob=(j:PairJob)=>['succeeded','failed','needs_check','disabled'].includes(j.phase);
 export async function automationPath(c:InstallContext,rel:string){return safePath(c.installRoot,path.join(c.installRoot,'pairing',rel));}
 const stamp=(s:any)=>typeof s==='string'&&Number.isFinite(Date.parse(s));
@@ -27,6 +27,7 @@ export async function setAutomation(c:InstallContext,enabled:boolean,deps:Pick<P
 }
 function validate(j:any):asserts j is PairJob{
  if(!j||j.schemaVersion!==1||!stamp(j.createdAt)||!stamp(j.expiresAt)||!Number.isSafeInteger(j.revision)||j.revision<0||!['waiting_native','verified','applying','succeeded','failed','needs_check','disabled'].includes(j.phase)||!['pending','attempted','delivered','needs_check','offline'].includes(j.notification?.phase))throw Error('pairing_job_invalid');
+ if(j.startup!==undefined&&(!j.startup||!Number.isSafeInteger(j.startup.ownerPid)||j.startup.ownerPid<=0||!stamp(j.startup.startedAt)))throw Error('pairing_job_invalid');
  try{assertId(j.requestId);assertId(j.generation);if(j.intentId)assertId(j.intentId);if(j.notification.transportId)assertId(j.notification.transportId);}catch{throw Error('pairing_job_invalid');}
  if(j.phase==='succeeded'&&j.result?.ok!==true||j.notification.body!==undefined&&(typeof j.notification.body!=='string'||Buffer.byteLength(j.notification.body)>32768))throw Error('pairing_job_invalid');
 }
@@ -38,13 +39,13 @@ export async function listPairJobs(c:InstallContext):Promise<PairJob[]>{
  return out.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.requestId.localeCompare(b.requestId));
 }
 export async function jobAuthorized(c:InstallContext,j:PairJob){const a=await readAutomation(c);return a.enabled&&a.generation===j.generation&&Date.parse(j.createdAt)>=Date.parse(a.enabledAt);}
-export async function enqueuePairJob(c:InstallContext,id:string,deps:Pick<PairDeps,'now'>={}):Promise<PairJob>{
- assertId(id);return automationLock(c,async()=>{
+export async function enqueuePairJob(c:InstallContext,id:string,deps:Pick<PairDeps,'now'>&{startupOwnerPid?:number}={}):Promise<PairJob>{
+ assertId(id);if(deps.startupOwnerPid!==undefined&&(!Number.isSafeInteger(deps.startupOwnerPid)||deps.startupOwnerPid<=0))throw Error('pairing_job_invalid');return automationLock(c,async()=>{
   await pruneLocked(c,deps);
-  const prior=await readPairJob(c,id);if(prior)return prior;const a=await readAutomation(c),r=(await readPairState(c)).requests.find(r=>r.requestId===id),now=+(deps.now?.()||new Date());
+  const prior=await readPairJob(c,id);if(prior){if(deps.startupOwnerPid&&prior.phase==='waiting_native'&&!prior.intentId&&!prior.result&&!prior.startup&&await jobAuthorized(c,prior))return updatePairJobLocked(c,{...prior,startup:{ownerPid:deps.startupOwnerPid,startedAt:(deps.now?.()||new Date()).toISOString()}});return prior;}const a=await readAutomation(c),r=(await readPairState(c)).requests.find(r=>r.requestId===id),now=+(deps.now?.()||new Date());
   if(!a.enabled||!r||Date.parse(r.observedAt)<Date.parse(a.enabledAt)||now>=Date.parse(r.expiresAt))throw Error('automation_request_not_eligible');
   if((await listPairJobs(c)).filter(j=>!terminalJob(j)).length>=32)throw Error('pairing_job_limit');
-  const j:PairJob={schemaVersion:1,requestId:id,generation:a.generation,createdAt:r.observedAt,expiresAt:r.expiresAt,revision:0,phase:'waiting_native',notification:{phase:'pending'}};
+  const j:PairJob={schemaVersion:1,requestId:id,generation:a.generation,createdAt:r.observedAt,expiresAt:r.expiresAt,revision:0,phase:'waiting_native',...(deps.startupOwnerPid?{startup:{ownerPid:deps.startupOwnerPid,startedAt:new Date(now).toISOString()}}:{}),notification:{phase:'pending'}};
   await atomicBytes(await automationPath(c,path.join('jobs',id+'.json')),jsonBytes(j));return j;
  });
 }

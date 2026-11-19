@@ -5,6 +5,7 @@ import {notifyPairJob,settlePairNotification} from './notifications.ts';
 import {withPairOperation} from './operations.ts';
 import {spawnPairWorker} from './process.ts';
 import {automationPath,readAutomation,listPairJobs,readPairJob,updatePairJob,updatePairJobLocked,jobAuthorized,terminalJob,automationLock} from './jobs.ts';
+import type {PairJob} from './jobs.ts';
 import {readPairState} from './store.ts';
 import {executePairRequest} from './executor.ts';
 import type {InstallContext} from '../installation/model.ts';import type {PairDeps} from './model.ts';
@@ -15,6 +16,23 @@ async function startLock(c:InstallContext){const file=await automationPath(c,'wo
 export async function inspectPairWorker(c:InstallContext){
  const file=await automationPath(c,'worker.json'),bytes=await optional(file);if(!bytes)return {active:false};if(bytes.length>4096)throw Error('pairing_worker_invalid');const m=JSON.parse(bytes.toString());
  if(m.schemaVersion!==1||!Number.isSafeInteger(m.pid)||m.pid<=0||!['starting','accepting','closed'].includes(m.phase))throw Error('pairing_worker_invalid');return {schemaVersion:1,pid:m.pid,phase:m.phase,active:m.phase!=='closed'&&!deadPid(m.pid)};
+}
+export function pairStartupView(j:PairJob,workerActive:boolean,proofCommitted=false):PairJob{
+ if(proofCommitted||j.phase!=='waiting_native'||j.intentId||j.result||!j.startup||workerActive||!deadPid(j.startup.ownerPid))return j;
+ return {...j,phase:'needs_check',errorCode:'pairing_worker_start_requires_check',result:{ok:false,errorCode:'pairing_worker_start_requires_check'}};
+}
+/** Independent of the Hook process. Never launches, proves identity, consumes a
+ * code, sends a notice, or resumes a request. The worker uses the same lock
+ * around proof/execution, so a committed or in-flight operation is preserved. */
+export async function reconcilePairStartup(c:InstallContext){
+ if(!(await readAutomation(c)).enabled||(await inspectPairWorker(c)).active)return;
+ const candidates=(await listPairJobs(c)).filter(j=>j.phase==='waiting_native'&&j.startup&&!j.intentId&&!j.result&&deadPid(j.startup.ownerPid));if(!candidates.length)return;
+ // The worker may be waiting for this Bus to shut down while replacing a
+ // connection. Never wait for its admission lock from the Bus timer.
+ let release;try{release=await acquireLock(await automationPath(c,'automation.lock'));}catch(e:any){if(e.message==='installation_busy')return;throw e;}
+ try{if(!(await readAutomation(c)).enabled||(await inspectPairWorker(c)).active)return;const state=await readPairState(c);
+  for(const candidate of candidates){const j=await readPairJob(c,candidate.requestId);if(!j||!await jobAuthorized(c,j)||state.requests.some(r=>r.requestId===j.requestId&&r.intentId))continue;const view=pairStartupView(j,false);if(view!==j)await updatePairJobLocked(c,view);}
+ }finally{await release();}
 }
 export async function schedulePairWorker(c:InstallContext,deps:WorkerDeps={}){
  return withInstallLock(c,async()=>{const release=await startLock(c);try{if(!(await readAutomation(c)).enabled)throw Error('pairing_automation_disabled');const marker=await inspectPairWorker(c);if(marker.active)return marker;

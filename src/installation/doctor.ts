@@ -1,3 +1,4 @@
+import {readPairState} from '../pairing/store.ts';
 import path from 'node:path';
 import {readFile,stat,open,unlink} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
@@ -10,7 +11,7 @@ import {pairEndpoints,inspectPairHealth} from '../pairing/health.ts';
 import {errorGuidance} from './guidance.ts';
 import type {InstallContext,PairedConnectionRecord} from './model.ts';
 import type {PairDeps} from '../pairing/model.ts';
-import {readAutomation,listPairJobs} from '../pairing/jobs.ts';import {inspectPairWorker} from '../pairing/worker.ts';
+import {readAutomation,listPairJobs} from '../pairing/jobs.ts';import {inspectPairWorker,pairStartupView} from '../pairing/worker.ts';
 
 type Check={id:string;status:'ok'|'warning'|'error'|'unverified';code:string;summary:string;nextAction:string};
 export async function probeInstallationWrite(root:string){
@@ -21,9 +22,10 @@ type Options={env?:Record<string,string|undefined>;checkWrite?:boolean;connectio
 export async function diagnoseInstallation(c:InstallContext,options:Options={}){
  const env=options.env||process.env,checks:Check[]=[];
  let automation:any;
- try{const a=await readAutomation(c);automation={mode:a.enabled?'auto':'manual',worker:await inspectPairWorker(c),jobs:(await listPairJobs(c)).map(j=>({requestId:j.requestId,phase:j.phase,notification:j.notification.phase,errorCode:j.errorCode}))};}catch{automation={errorCode:'pairing_automation_requires_check'};}
+ try{const a=await readAutomation(c),worker=await inspectPairWorker(c),jobs=await listPairJobs(c),proofs=jobs.some(j=>j.startup)?(await readPairState(c)).requests.filter(r=>r.intentId).map(r=>r.requestId):[];automation={mode:a.enabled?'auto':'manual',worker,jobs:jobs.map(j=>a.enabled&&a.generation===j.generation&&Date.parse(j.createdAt)>=Date.parse(a.enabledAt)?pairStartupView(j,worker.active,proofs.includes(j.requestId)):j).map(j=>({requestId:j.requestId,phase:j.phase,notification:j.notification.phase,errorCode:j.errorCode,currentGeneration:a.enabled&&a.generation===j.generation&&Date.parse(j.createdAt)>=Date.parse(a.enabledAt)}))};}catch{automation={errorCode:'pairing_automation_requires_check'};}
  const add=(id:string,status:Check['status'],code:string,summary?:string,nextAction?:string)=>{const guidance=errorGuidance(code);checks.push({id,status,code,summary:summary||guidance.summary,nextAction:nextAction||guidance.nextAction});};
  const capture=async(id:string,fn:()=>Promise<unknown>,code:string)=>{try{await fn();add(id,'ok','verified','检查通过。','none');return true;}catch(e:any){const actual=['EPERM','EACCES'].includes(e.code)?'storage_access_denied':/^[a-z_]+$/.test(e.message||'')?e.message:code;add(id,'error',actual);return false;}};
+ if(automation?.jobs?.some(j=>j.currentGeneration&&j.errorCode==='pairing_worker_start_requires_check'))add('pairing_worker_start','error','pairing_worker_start_requires_check');
  const paths={home:c.home,installRoot:path.resolve(c.installRoot),runtimeRoot:path.join(c.installRoot,'runtime'),nodeExe:c.nodeExe,nodeVersion:process.versions.node,pinnedRoot:env.AGENTWIRE_INSTALL_ROOT||null,localAppData:env.LOCALAPPDATA||null};
  add('node_runtime',Number(process.versions.node.split('.')[0])>=24?'ok':'error','node_runtime',`当前 Node ${process.versions.node}，要求 >=24。`,'use_node_24_or_newer');
  const exists=await capture('install_root',async()=>{if(!(await stat(await safePath(c.installRoot,c.installRoot))).isDirectory())throw Error('install_root_missing');},'install_root_missing');
