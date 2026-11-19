@@ -27,6 +27,49 @@ async function fixture(t:any,provider:'codex'|'claude'='codex',interrupted=false
  return {...f,r,main,peer,turn,e,file,rows,save,processor};
 }
 
+async function legacyReady(f:any,wireVersion='clean-v1',phase='ready'){
+ const {pairing,admissionMode,...rest}=f.r;
+ const record={...rest,schemaVersion:1,phase,probeWireVersion:wireVersion,probeIds:{forward:randomUUID(),reverse:randomUUID()},probeDeadlineAt:new Date(f.clock.value+120000).toISOString()};
+ await writeFile(path.join(f.c.installRoot,'connections',f.r.connectionId,'connection.json'),JSON.stringify(record));
+}
+function humanInputs(f:any){
+ const first=f.rows[2];first.payload.id='msg_'+randomUUID();first.payload.internal_chat_message_metadata_passthrough.create_time=1;
+ const extra=[2,3].map(time=>{const r=structuredClone(first);r.payload.id='msg_'+randomUUID();r.payload.content[0].text='additional human input';r.payload.internal_chat_message_metadata_passthrough.create_time=time;return r;});
+ f.rows.splice(3,0,...extra);return [first,...extra];
+}
+for(const provider of ['codex','claude'] as const)test('clean-v1 legacy ready connection recovers verified '+provider+' non-task event',async t=>{
+ const f=await fixture(t,provider);await legacyReady(f);await f.main.lifecycle.store.putEvent(f.e);const before=await readFile(f.file);
+ assert.equal((await f.processor.process(f.e)).reason,'verified_native_non_task');
+ assert.equal((await inspectConnectionWork(f.c,f.r.connectionId)).artifactsPending,0);assert.deepEqual(await readFile(f.file),before);assert.equal(f.sent.length,0);
+});
+for(const legacy of [false,true])test('composer with distinct native human inputs is audited on '+(legacy?'legacy ready':'identity paired')+' connection',async t=>{
+ const f=await fixture(t);if(legacy)await legacyReady(f);humanInputs(f);await f.save();await f.main.lifecycle.store.putEvent(f.e);
+ const nativeBefore=await readFile(f.file),eventBefore=await readFile(f.main.lifecycle.store.file('events',f.e.eventKey)),pairingBefore=await readFile(f.c.installRoot+'/pairing/state.json');
+ assert.equal((await f.processor.process(f.e)).reason,'verified_native_non_task');
+ const mark=await f.main.lifecycle.store.read(f.main.lifecycle.store.file('applied',f.e.eventKey));assert.equal(mark.proof.inputCount,3);
+ assert.deepEqual(await readFile(f.file),nativeBefore);assert.deepEqual(await readFile(f.main.lifecycle.store.file('events',f.e.eventKey)),eventBefore);assert.deepEqual(await readFile(f.c.installRoot+'/pairing/state.json'),pairingBefore);
+ assert.equal((await inspectConnectionWork(f.c,f.r.connectionId)).artifactsPending,0);assert.equal(await f.main.lifecycle.store.getExecution(f.e),undefined);assert.equal(f.sent.length,0);
+});
+for(const mode of ['legacy_wire','unspecified_wire','not_ready'] as const)test('legacy recovery refuses '+mode,async t=>{
+ const f=await fixture(t);await legacyReady(f,mode==='legacy_wire'?'legacy':mode==='unspecified_wire'?'':'clean-v1',mode==='not_ready'?'probing':'ready');
+ assert.equal((await f.processor.process(f.e)).status,'deferred');assert.equal(await f.main.lifecycle.store.isApplied(f.e.eventKey),false);
+});
+for(const mode of ['peer_provenance','missing_provenance','client_id','wrong_turn','missing_id','duplicate_id','equal_time','reversed_time','missing_time','wrong_kinds','extra_block','queue','child','duplicate_file','duplicate_end','unmapped_write','unfinished_task'] as const)test('multiple native inputs remain unresolved for '+mode,async t=>{
+ const f=await fixture(t);await legacyReady(f);const inputs=humanInputs(f),v=inputs[2].payload,m=v.internal_chat_message_metadata_passthrough;
+ if(mode==='peer_provenance')m.content_item_metadata[0].provenance.type='agent';
+ if(mode==='missing_provenance')delete m.content_item_metadata;
+ if(mode==='client_id')v.client_id=randomUUID();if(mode==='wrong_turn')m.turn_id=randomUUID();
+ if(mode==='missing_id')delete v.id;if(mode==='duplicate_id')v.id=inputs[0].payload.id;
+ if(mode==='equal_time')m.create_time=2;if(mode==='reversed_time')m.create_time=0;if(mode==='missing_time')delete m.create_time;
+ if(mode==='wrong_kinds')m.content_item_kinds=['agent.text'];if(mode==='extra_block')v.content.push({type:'input_image',image_url:'test'});
+ if(mode==='queue')f.rows[1].payload.turn_attribution.turn_trigger='queue';if(mode==='child')f.rows[1].payload.turn_attribution.parent_turn_id=randomUUID();
+ if(mode==='duplicate_end')f.rows.push(structuredClone(f.rows.at(-1)));
+ if(mode==='unmapped_write'){const id=randomUUID(),dir=path.join(f.main.bus.store.root,'native','attempts');await mkdir(dir,{recursive:true});await writeFile(path.join(dir,id+'.json'),JSON.stringify({schemaVersion:1,wireVersion:'clean-v1',connectionId:f.r.connectionId,provider:'codex',targetSessionId:f.peer.sessionId,sourceSessionId:f.r.claude.sessionId,messageId:randomUUID(),attemptId:id,transportId:randomUUID(),bodySha256:'a'.repeat(64),createdAt:f.e.observedAt,updatedAt:f.e.observedAt,phase:'write_started'}));}
+ if(mode==='unfinished_task')await f.main.bus.store.putNew(createTask({messageId:randomUUID(),from:'claude',to:'codex',targetSessionId:f.peer.sessionId,body:'unresolved task'},realClock));
+ await f.save();if(mode==='duplicate_file')await writeFile(path.join(path.dirname(f.file),'copy-'+f.peer.sessionId+'.jsonl'),await readFile(f.file));
+ assert.equal((await f.processor.process(f.e)).status,'deferred');assert.equal(await f.main.lifecycle.store.isApplied(f.e.eventKey),false);assert.equal(f.sent.length,0);
+});
+
 for(const provider of ['codex','claude'] as const)test('verified '+provider+' human orphan Stop preserves evidence and clears only non-task blocker',async t=>{
  const f=await fixture(t,provider),nativeBefore=await readFile(f.file);await f.main.lifecycle.store.putEvent(f.e);const eventBefore=await readFile(f.main.lifecycle.store.file('events',f.e.eventKey));
  assert.deepEqual(await f.processor.process(f.e),{status:'ignored',reason:'verified_native_non_task'});
@@ -36,6 +79,41 @@ for(const provider of ['codex','claude'] as const)test('verified '+provider+' hu
 
 test('composer aborted before input persistence is non-task only with exact native abort and complete hint',async t=>{
  const f=await fixture(t,'codex',true);assert.deepEqual(await f.processor.process(f.e),{status:'ignored',reason:'verified_native_non_task'});const mark=await f.main.lifecycle.store.read(f.main.lifecycle.store.file('applied',f.e.eventKey));assert.equal(mark.proof.inputCount,0);assert.equal(mark.proof.nativeOutcome,'interrupted');assert.equal(f.sent.length,0);
+});
+
+function emptyDesktopPagePrelude(turn:string){return [
+ {type:'response_item',payload:{type:'function_call_output',id:'fco_'+randomUUID(),name:'codex_apps_open_page',namespace:'agent',output:'{"page_id":null}',internal_chat_message_metadata_passthrough:{turn_id:turn,create_time:1}}},
+ {type:'response_item',payload:{type:'function_call_output',id:'fco_'+randomUUID(),name:'codex_apps_selected_page_part_1_of_1',namespace:'agent',output:'Companion Page snapshot part 1 of 1:\n{"page_id":null,"document_view":null}',internal_chat_message_metadata_passthrough:{turn_id:turn,create_time:2}}}
+];}
+test('aborted composer with only empty desktop page prelude is audited without changing native evidence or task state',async t=>{
+ const f=await fixture(t,'codex',true);f.rows.splice(2,0,...emptyDesktopPagePrelude(f.turn));await f.save();const before=await readFile(f.file);await f.main.lifecycle.store.putEvent(f.e);const eventBefore=await readFile(f.main.lifecycle.store.file('events',f.e.eventKey));
+ assert.equal((await inspectConnectionWork(f.c,f.r.connectionId)).artifactsPending,1);
+ assert.deepEqual(await f.processor.process(f.e),{status:'ignored',reason:'verified_native_non_task'});
+ const mark=await f.main.lifecycle.store.read(f.main.lifecycle.store.file('applied',f.e.eventKey));assert.equal(mark.proof.inputCount,0);assert.equal(mark.proof.nativeOutcome,'interrupted');
+ assert.deepEqual(await readFile(f.file),before);assert.deepEqual(await readFile(f.main.lifecycle.store.file('events',f.e.eventKey)),eventBefore);assert.equal((await inspectConnectionWork(f.c,f.r.connectionId)).artifactsPending,0);assert.equal(await f.main.lifecycle.store.getExecution(f.e),undefined);assert.equal(f.sent.length,0);
+});
+for(const mode of ['real_call','web_search_call','unknown_response','assistant_output','partial_duplicate_file','unknown_output','call_id','wrong_turn','wrong_namespace','extra_field','nonempty_page','nonempty_snapshot','missing_half','duplicate_half','reversed','duplicate_id','invalid_time','cli','queue','not_aborted','bound_attempt'] as const)test('empty desktop page exception refuses '+mode,async t=>{
+ const f=await fixture(t,'codex',true),prelude:any[]=emptyDesktopPagePrelude(f.turn);
+ if(mode==='real_call')prelude.push({type:'response_item',payload:{type:'function_call',name:'exec_command',arguments:'{}'}});
+ if(mode==='web_search_call')prelude.push({type:'response_item',payload:{type:'web_search_call',id:'ws_123',status:'completed',action:{type:'search',query:'real task'}}});
+ if(mode==='unknown_response')prelude.push({type:'response_item',payload:{type:'new_native_tool',output:'unknown'}});
+ if(mode==='assistant_output')prelude.push({type:'response_item',payload:{type:'message',role:'assistant',content:[{type:'output_text',text:'completed work'}]}});
+ if(mode==='unknown_output')prelude.push({type:'response_item',payload:{type:'function_call_output',name:'other',output:'{}'}});
+ if(mode==='call_id')prelude[0].payload.call_id='real-call';
+ if(mode==='wrong_turn')prelude[0].payload.internal_chat_message_metadata_passthrough.turn_id=randomUUID();
+ if(mode==='wrong_namespace')prelude[0].payload.namespace='tools';
+ if(mode==='extra_field')prelude[0].payload.arguments='{}';
+ if(mode==='nonempty_page')prelude[0].payload.output='{"page_id":"some-page"}';
+ if(mode==='nonempty_snapshot')prelude[1].payload.output='Companion Page snapshot part 1 of 1:\n{"page_id":null,"document_view":{"text":"data"}}';
+ if(mode==='missing_half')prelude.pop();if(mode==='duplicate_half')prelude.push(structuredClone(prelude[1]));if(mode==='reversed')prelude.reverse();
+ if(mode==='duplicate_id')prelude[1].payload.id=prelude[0].payload.id;
+ if(mode==='invalid_time')prelude[0].payload.internal_chat_message_metadata_passthrough.create_time='1';
+ if(mode==='cli')f.rows[0].payload.source='cli';if(mode==='queue')f.rows[1].payload.turn_attribution.turn_trigger='queue';
+ if(mode==='not_aborted')f.rows.at(-1).payload.type='task_complete';
+ if(mode==='bound_attempt'){const id=randomUUID(),dir=path.join(f.main.bus.store.root,'native','attempts');await mkdir(dir,{recursive:true});await writeFile(path.join(dir,id+'.json'),JSON.stringify({schemaVersion:1,wireVersion:'clean-v1',connectionId:f.r.connectionId,provider:'codex',targetSessionId:f.peer.sessionId,sourceSessionId:f.r.claude.sessionId,messageId:randomUUID(),attemptId:id,transportId:randomUUID(),bodySha256:'a'.repeat(64),createdAt:f.e.observedAt,updatedAt:f.e.observedAt,phase:'mapped',nativeExecutionId:f.turn}));}
+ f.rows.splice(2,0,...prelude);await f.save();
+ if(mode==='partial_duplicate_file')await writeFile(path.join(path.dirname(f.file),'partial-'+f.peer.sessionId+'.jsonl'),[f.rows[0],{type:'turn_context',payload:{turn_id:f.turn,cwd:f.peer.workspaceRoot}},...prelude].map(x=>JSON.stringify(x)).join('\n')+'\n');
+ assert.equal((await f.processor.process(f.e)).status,'deferred');assert.equal(await f.main.lifecycle.store.isApplied(f.e.eventKey),false);assert.equal(f.sent.length,0);
 });
 
 test('failed historical pairing input is classifiable from native provenance without claiming or replaying code',async t=>{

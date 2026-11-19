@@ -58,6 +58,8 @@ node --experimental-strip-types src/labus.ts setup --apply --operation <runtime-
 
 在 Codex 说「列出可以连接的 Claude 聊天，让我选」，或在 Claude 说「连接我打开的 Codex」。明确选择目标后，程序进行双向探针；只有 `ready` 才表示连接成功。历史候选、活进程、已入队都不是送达证明。
 
+旧版候选选择连接的 `ready` 表示两个方向的原生任务回合、结果采集和回复送达均已按精确身份关联确认，不保证算术或业务结论正确。`probeChecks.forward/reverse.transport` 记录通信证据，`answer` 单独记录答案是否符合探针预期（`expected`、`different` 或 `unavailable`）。例如回答 `23 × 29 = 667` 并附带说明，会记为 `answer: different`，但完整通信证据仍可使连接就绪；证据缺失、关联冲突或回复送达不确定仍阻止就绪。结果的业务结论继续保持 `unverified`。重新检查已有探针不会重发消息。
+
 当前回合需结束才能消费原生队列时，正常结束后再检查，不在同回合阻塞等自己的 Stop。已有连接只查状态，不重复探针。首版只允许一组活动连接，换窗口需要明确断开和重新选择。
 
 连接成功后，用自然语言委派任务即可；首次或新的工具命令仍可能触发两端自身的审批。

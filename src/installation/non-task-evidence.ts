@@ -14,6 +14,35 @@ export type NonTaskProof={evidenceRef:string;snapshotSha256:string;inputCount:nu
 type Witness={file:string;size:number;mtimeMs:number;ino:number};
 type Scan={proofs:Map<string,NonTaskProof>;files:Witness[]};
 const ENTRY_LIMIT=20000,FILE_LIMIT=128,BYTE_LIMIT=256*1024*1024,LINE_LIMIT=16*1024*1024;
+const exactKeys=(v:any,keys:string[])=>v&&typeof v==='object'&&!Array.isArray(v)&&Object.keys(v).length===keys.length&&keys.every(k=>Object.hasOwn(v,k));
+/** Desktop inserts these empty page observations without a tool call or user
+ * input. Only the complete native pair is benign; names alone prove nothing. */
+function emptyDesktopPagePrelude(tools:any[],turn:string){
+ if(tools.length!==2)return false;
+ const names=['codex_apps_open_page','codex_apps_selected_page_part_1_of_1'];
+ for(const [n,v] of tools.entries()){
+  if(!exactKeys(v,['type','id','name','namespace','output','internal_chat_message_metadata_passthrough'])||v.type!=='function_call_output'||v.namespace!=='agent'||v.name!==names[n]||typeof v.id!=='string'||!/^fco_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(v.id)||typeof v.output!=='string')return false;
+  const m=v.internal_chat_message_metadata_passthrough;if(!exactKeys(m,['turn_id','create_time'])||m.turn_id!==turn||typeof m.create_time!=='number'||!Number.isFinite(m.create_time))return false;
+  try{const prefix='Companion Page snapshot part 1 of 1:\n';if(n===1&&!v.output.startsWith(prefix))return false;const data=JSON.parse(n===0?v.output:v.output.slice(prefix.length));if(!exactKeys(data,n===0?['page_id']:['page_id','document_view'])||data.page_id!==null||n===1&&data.document_view!==null)return false;}catch{return false;}
+ }
+ return tools[0].id!==tools[1].id&&tools[0].internal_chat_message_metadata_passthrough.create_time<=tools[1].internal_chat_message_metadata_passthrough.create_time;
+}
+/** A composer can receive further human inputs while running (including native
+ * approval answers). Every input must prove its own origin; wording is unused.
+ * Multiple inputs additionally need distinct native IDs and ordered times so
+ * duplicated or ambiguous transcript rows cannot be dismissed as steering. */
+function humanComposerInputs(inputs:any[],turn:string){
+ const ids=new Set<string>();let previous=-Infinity;
+ for(const input of inputs){
+  const m=input.internal_chat_message_metadata_passthrough;
+  if(input.clientId!==undefined||input.client_id!==undefined||!Array.isArray(input.content)||input.content.length!==1||input.content[0]?.type!=='input_text'||typeof input.content[0].text!=='string'||m?.turn_id!==turn||!Array.isArray(m.content_item_metadata)||m.content_item_metadata.length!==1||m.content_item_metadata[0]?.provenance?.type!=='user')return false;
+  if(inputs.length>1){
+   if(typeof input.id!=='string'||!/^msg_[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(input.id)||ids.has(input.id)||typeof m.create_time!=='number'||!Number.isFinite(m.create_time)||m.create_time<=previous||!Array.isArray(m.content_item_kinds)||m.content_item_kinds.length!==1||m.content_item_kinds[0]!=='user.text')return false;
+   ids.add(input.id);previous=m.create_time;
+  }
+ }
+ return true;
+}
 async function jsonFiles(dir:string){try{const names=await readdir(dir,{withFileTypes:true});if(names.length>10000||names.some(e=>!e.isFile()||!e.name.endsWith('.json')))throw Error('non_task_evidence_invalid');const rows=[];for(const e of names){const file=await safePath(dir,path.join(dir,e.name)),h=await open(file,'r');try{if((await h.stat()).size>1048576)throw Error('non_task_evidence_limit');rows.push(JSON.parse(await h.readFile('utf8')));}finally{await h.close();}}return rows;}catch(e:any){if(e.code==='ENOENT')return [];throw e;}}
 /** Exact session filenames only; never select a newest chat or inspect text to
  * infer a task. Complete bounded enumeration is necessary to reject duplicates. */
@@ -35,7 +64,7 @@ async function nativeProofs(c:InstallContext,p:Provider,session:string,cwd:strin
   try{
    const before=await handle.stat();if(!before.isFile()||!before.size||(total+=before.size)>BYTE_LIMIT)throw Error('non_task_evidence_limit');
    files.push({file,size:before.size,mtimeMs:before.mtimeMs,ino:before.ino});
-   const turns=new Map<string,{starts:any[];inputs:any[];ends:any[];tools:number;cwd:string|undefined}>();for(const id of targets)turns.set(id,{starts:[],inputs:[],ends:[],tools:0,cwd:undefined});
+   const turns=new Map<string,{starts:any[];inputs:any[];ends:any[];tools:any[];cwd:string|undefined}>();for(const id of targets)turns.set(id,{starts:[],inputs:[],ends:[],tools:[],cwd:undefined});
    let current:string|undefined,meta:any,metas=0;const hash=createHash('sha256');let pending=Buffer.alloc(0);
    const row=(line:Buffer)=>{
     if(line.length>LINE_LIMIT)throw Error('non_task_evidence_limit');const r=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(line)),v=r.payload||{};
@@ -52,7 +81,10 @@ async function nativeProofs(c:InstallContext,p:Provider,session:string,cwd:strin
     const t=turns.get(current!);if(!t)return;
     if(r.type==='turn_context')t.cwd=v.cwd;
     if(r.type==='response_item'&&v.type==='message'&&v.role==='user')t.inputs.push(v);
-    if(r.type==='response_item'&&['function_call','custom_tool_call','local_shell_call','function_call_output','custom_tool_call_output'].includes(v.type))t.tools++;
+    // For a zero-input abort, only native developer context and the exact
+    // empty-page pair are benign. New tool types and assistant activity must
+    // fail closed rather than disappearing from a fixed tool-type list.
+    if(r.type==='response_item'&&!(v.type==='message'&&v.role==='developer'))t.tools.push(v);
     if(r.type==='event_msg'&&['task_complete','turn_aborted'].includes(v.type))t.ends.push(v);
    };
    const stream=handle.createReadStream({start:0,end:before.size-1,autoClose:false});
@@ -60,15 +92,13 @@ async function nativeProofs(c:InstallContext,p:Provider,session:string,cwd:strin
    if(pending.length)throw Error('non_task_evidence_incomplete');const after=await handle.stat();if(before.size!==after.size||before.mtimeMs!==after.mtimeMs||before.ino!==after.ino)throw Error('non_task_evidence_changed');
    if(p==='codex'&&(metas!==1||meta?.id!==session||!['vscode','cli'].includes(meta.source)))throw Error('non_task_evidence_invalid');
    const snapshotSha256=hash.digest('hex');
-   for(const [id,t] of turns){if(t.starts.length||t.inputs.length||t.ends.length)seen.set(id,(seen.get(id)||0)+1);let nativeOutcome:NonTaskProof['nativeOutcome']='response_ended';
+   for(const [id,t] of turns){if(t.starts.length||t.inputs.length||t.ends.length||t.tools.length)seen.set(id,(seen.get(id)||0)+1);let nativeOutcome:NonTaskProof['nativeOutcome']='response_ended';
     if(p==='codex'){
      if(t.starts.length!==1||t.ends.length!==1)continue;const a=t.starts[0].turn_attribution,end=t.ends[0];
      if(!a||a.turn_id!==id||a.turn_trigger!=='composer'||a.parent_turn_id!==null||a.initiating_agent_path!==null||a.root_turn_id!==id||path.relative(path.resolve(t.cwd??meta.cwd),path.resolve(cwd))!==''||end.turn_id!==id)continue;
      nativeOutcome=end.type==='turn_aborted'?'interrupted':'response_ended';
-     if(t.inputs.length===0){if(nativeOutcome!=='interrupted'||t.tools!==0)continue;}
-     else if(t.inputs.length===1){const input=t.inputs[0],m=input.internal_chat_message_metadata_passthrough;
-      if(input.clientId!==undefined||input.client_id!==undefined||!Array.isArray(input.content)||input.content.length!==1||input.content[0]?.type!=='input_text'||typeof input.content[0].text!=='string'||m?.turn_id!==id||!Array.isArray(m.content_item_metadata)||m.content_item_metadata.length!==1||m.content_item_metadata[0]?.provenance?.type!=='user')continue;
-     }else continue;
+     if(t.inputs.length===0){if(nativeOutcome!=='interrupted'||!(t.tools.length===0||meta.source==='vscode'&&emptyDesktopPagePrelude(t.tools,id)))continue;}
+     else if(!humanComposerInputs(t.inputs,id))continue;
     }else{
      if(t.inputs.length!==1)continue;const input=t.inputs[0];if(input.origin?.kind!=='human'||input.isSidechain!==false||input.agentId!==undefined||typeof input.cwd!=='string'||path.relative(path.resolve(input.cwd),path.resolve(cwd))!==''||!(typeof input.message?.content==='string'||Array.isArray(input.message?.content)&&input.message.content.every((b:any)=>b?.type==='text'&&typeof b.text==='string')))continue;
     }
@@ -87,7 +117,9 @@ export function createNonTaskVerifier(c:InstallContext,connectionId:string){
  return async(e:LifecycleEvent):Promise<NonTaskProof|undefined>=>{
   try{
    validateEvent(e);if(!['stop','interrupt'].includes(e.phase)||e.output!==undefined||e.messageId||e.dispatchNonce||e.inputKind||e.backgroundPending||e.continuation||e.incomplete||e.errorCode!==(e.phase==='interrupt'?'native_interrupt':undefined))return;
-   const r=await readConnection(c,connectionId);if(r.schemaVersion!==2||!['paired','ready'].includes(r.phase)||r[e.provider].sessionId!==e.sessionId)return;
+   const r=await readConnection(c,connectionId);
+   const supported=r.schemaVersion===2?r.phase==='paired':r.probeWireVersion==='clean-v1'&&r.phase==='ready';
+   if(!supported||r[e.provider].sessionId!==e.sessionId)return;
    // Legacy tasks may lack native attempt IDs entirely. Never resolve orphan
    // events while any task/message or native execution still needs attention.
    const work=await inspectConnectionWork(c,connectionId);if(work.unfinished||work.uncertain||work.nativeOutstanding)return;

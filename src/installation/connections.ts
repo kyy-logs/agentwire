@@ -2,6 +2,8 @@ import path from 'node:path';import {readFile,open,unlink} from 'node:fs/promise
 import {assertId,realClock} from '../model.ts';import type {MessageRecord} from '../model.ts';import {requestBus} from '../ipc.ts';import {FileMessageStore} from '../store.ts';import {FileLifecycleStore} from '../lifecycle/store.ts';
 import {discoverCandidates} from './discovery.ts';import {ensureService,serviceHealth,shutdownService} from './service.ts';import {optional,atomicBytes,jsonBytes,resolveLayout,safePath,acquireLock,assertNoConnectionSwitch,deadPid} from './paths.ts';import type {Candidate,ConnectionRecord,PairedConnectionRecord,InstallContext,SourceRef,Provider} from './model.ts';import type {PairActivation,PairDeps} from '../pairing/model.ts';
 import {withPairState} from '../pairing/store.ts';import {assertPairAdmission,pairEndpoints} from '../pairing/health.ts';
+import {digest} from '../lifecycle/model.ts';import {IdentityStore} from '../native/identity-store.ts';
+import type {LegacyConnectionRecord,ProbeCheck} from './model.ts';
 type Deps=PairDeps&{shutdown?:typeof shutdownService;connectionId?:string;archive?:boolean};
 const terminal=new Set(['completed','delivered','failed','expired','stopped']);
 const stateFor=(c:InstallContext,id:string)=>{assertId(id);return path.join(resolveLayout(c).connections,id,'state');};
@@ -70,10 +72,34 @@ export async function beginProbes(c:InstallContext,id:string,deps:Deps={}):Promi
  for(const [direction,from,to] of [['forward','codex','claude'],['reverse','claude','codex']] as const){const messageId=r.probeIds[direction];if(await new FileMessageStore(state,realClock).get(messageId))continue;try{await call(state,'accept',{messageId,kind:'task',from,to,returnMode:'auto',body:r.probeWireVersion==='clean-v1'?'连接测试：仅计算23×29，正常回答一行667。不要使用工具、修改文件或发起任务；程序自动回传。':'LOCALBUS-CONNECT '+messageId+'：仅计算23×29，正常回答一行 LOCALBUS-CONNECT '+messageId+' 667。不要使用工具、修改文件或发起任务；程序自动回传。'});}catch(e:any){r.phase='needs_check';r.errorCode=/^[a-z_]+$/.test(e.message)?e.message:'probe_accept_unconfirmed';await save(c,r);return r;}}
  return r;
 }
+async function inspectProbe(c:InstallContext,r:LegacyConnectionRecord,direction:'forward'|'reverse'):Promise<ProbeCheck>{
+ const state=stateFor(c,r.connectionId),store=new FileMessageStore(state,realClock),life=new FileLifecycleStore(state),messageId=r.probeIds[direction];
+ const parent=await store.get(messageId),result=await life.getResult(messageId);
+ const check:ProbeCheck={transport:'unconfirmed',answer:!result?'unavailable':result.body.trim()===(r.probeWireVersion==='clean-v1'?'667':'LOCALBUS-CONNECT '+messageId+' 667')?'expected':'different'};
+ if(!parent?.resultRef||!result)return check;
+ const m=parent.message,from=direction==='forward'?'codex':'claude',to=direction==='forward'?'claude':'codex';
+ if(m.kind!=='task'||m.messageId!==messageId||m.taskId!==messageId||m.from!==from||m.to!==to||m.targetSessionId!==r[to].sessionId||parent.returnMode!=='auto'||parent.attempts<1||parent.state!=='completed'||parent.completion?.nativeOutcome!=='response_ended')return check;
+ if(r.probeWireVersion==='clean-v1'&&m.schemaVersion!==2||m.schemaVersion===2&&m.sourceSessionId!==r[from].sessionId)return check;
+ if(result.messageId!==messageId||result.ref.provider!==to||result.ref.sessionId!==r[to].sessionId||result.nativeOutcome!=='response_ended'||result.sha256!==digest(result.body)||parent.completion.sha256!==result.sha256||parent.completion.eventKey!==result.terminalEventKey||parent.completion.artifactRef!=='lifecycle/results/'+messageId+'.json')return check;
+ const execution=await life.getExecution(result.ref),reply=await store.get(parent.resultRef),b=reply?.message;
+ if(!execution||execution.phase!=='applied'||execution.messageId!==messageId||execution.dispatchNonce!==parent.dispatchNonce||execution.terminalEventKey!==result.terminalEventKey||execution.replyMessageId!==parent.resultRef||await life.hasConflict(result.ref))return check;
+ if(!b||b.kind!=='reply'||b.replyTo!==messageId||b.taskId!==m.taskId||b.from!==to||b.to!==from||b.targetSessionId!==r[from].sessionId||reply.state!=='delivered'||reply.receipt?.status!=='accepted'||!reply.receipt.evidenceRef)return check;
+ if(m.schemaVersion===2){
+  if(b.schemaVersion!==2||b.sourceSessionId!==r[to].sessionId||!parent.activeAttemptId)return check;
+  const attempt=await new IdentityStore(state,realClock).get(parent.activeAttemptId);
+  // Terminal capture may commit before the initial submission receipt is
+  // reconciled. The mapped native attempt is the authoritative input evidence.
+  if(!attempt||attempt.phase!=='reply_committed'||attempt.connectionId!==r.connectionId||attempt.messageId!==messageId||attempt.provider!==to||attempt.sourceSessionId!==r[from].sessionId||attempt.targetSessionId!==r[to].sessionId||attempt.nativeExecutionId!==result.ref.nativeExecutionId||!attempt.evidenceRef)return check;
+ }
+ check.transport='observed';return check;
+}
 export async function inspectConnection(c:InstallContext,id:string,deps:Deps={}):Promise<ConnectionRecord>{
- const r=await load(c,id);if(r.schemaVersion===2||['selected','awaiting_native_trust','disconnected'].includes(r.phase)||r.errorCode==='native_work_may_continue_keep_routes')return r;const state=stateFor(c,id),store=new FileMessageStore(state,realClock),life=new FileLifecycleStore(state);let complete=true;
- for(const messageId of Object.values(r.probeIds)){const parent=await store.get(messageId),result=await life.getResult(messageId);if(!parent?.resultRef||!result){complete=false;continue;}const reply=await store.get(parent.resultRef);if(parent.state!=='completed'||parent.completion?.nativeOutcome!=='response_ended'||result.body.trim()!==(r.probeWireVersion==='clean-v1'?'667':'LOCALBUS-CONNECT '+messageId+' 667')||reply?.state!=='delivered'||!reply.receipt?.evidenceRef){complete=false;continue;}const execution=await life.getExecution(result.ref);if(r.probeWireVersion==='clean-v1'&&parent.message.schemaVersion!==2){complete=false;continue;}if(execution?.messageId!==messageId||execution.phase==='needs_check'||result.ref.sessionId!==parent.message.targetSessionId){complete=false;}}
- if(complete){r.phase='ready';delete r.errorCode;}else if(+(deps.now?.()||new Date())>Date.parse(r.probeDeadlineAt)){r.phase='needs_check';r.errorCode='connection_probe_unconfirmed';}await save(c,r);return r;
+ const r=await load(c,id);if(r.schemaVersion===2||['selected','awaiting_native_trust','disconnected'].includes(r.phase)||r.errorCode==='native_work_may_continue_keep_routes')return r;
+ // Readiness describes exact transport roundtrips. Model answer formatting is
+ // diagnostic data and never substitutes for native correlation or delivery.
+ r.probeChecks={forward:await inspectProbe(c,r,'forward'),reverse:await inspectProbe(c,r,'reverse')};
+ const complete=r.probeChecks.forward.transport==='observed'&&r.probeChecks.reverse.transport==='observed';
+ if(complete){r.phase='ready';delete r.errorCode;}else if(r.phase==='ready'||+(deps.now?.()||new Date())>Date.parse(r.probeDeadlineAt)){r.phase='needs_check';r.errorCode='connection_probe_unconfirmed';}await save(c,r);return r;
 }
 async function sendPaired(c:InstallContext,r:PairedConnectionRecord,source:SourceRef,target:Provider,payload:unknown,deps:Deps):Promise<MessageRecord>{
  return withPairState(c,async tx=>{const current=await activeConnection(c);if(current.connectionId!==r.connectionId||current.schemaVersion!==2)throw Error('retry_connection_changed');verifySource(current,source);assertPairAdmission(tx,current);const endpoint=await pairEndpoints(c,current,deps);
