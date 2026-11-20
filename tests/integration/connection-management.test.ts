@@ -179,3 +179,31 @@ test('expired clean task with exact native terminal evidence is ended without be
   assert.deepEqual(await readFile(path.join(root,'messages',id+'.json')),before);assert.equal((await store.get(id))!.state,'expired');assert.equal((await store.get(id))!.resultRef,undefined);
  }
 });
+
+test('explicit history archive hides only disconnected history and preserves uncertain native evidence',async t=>{
+ const f=await savedPairs(t),r=f.pairs[1],id=r.connectionId,file=path.join(f.c.installRoot,'connections',id,'connection.json');
+ const {hash}=await import('../../src/installation/paths.ts'),{FileLifecycleStore}=await import('../../src/lifecycle/store.ts');
+ const life=new FileLifecycleStore(f.state(r)),ref={provider:'codex' as const,sessionId:r.codex.sessionId,nativeExecutionId:randomUUID()},event={schemaVersion:1 as const,...ref,phase:'stop' as const,eventKey:eventKey(ref,'stop'),observedAt:new Date().toISOString()};await life.putEvent(event);
+ const eventFile=life.file('events',event.eventKey),original=await readFile(file),native=await readFile(eventFile),routes=await readFile(path.join(f.c.installRoot,'routes.json')),active=await readFile(path.join(f.c.installRoot,'active-connection.json'));
+ assert.equal(typeof api.archiveConnectionHistory,'function');const receipt=await api.archiveConnectionHistory(f.c,id,hash(original),f.deps);assert.equal(receipt.disposition,'tracking_retired_unverified');
+ const listed=await api.listConnections(f.c,f.source,f.deps);assert.deepEqual(listed.connections.map((x:any)=>x.connectionId),[f.pairs[0].connectionId]);assert.equal(listed.archivedCount,1);assert.equal((await api.inspectConnectionWork(f.c,id)).artifactsPending,1);assert.equal(await life.isApplied(event.eventKey),false);
+ assert.deepEqual(await readFile(file),original);assert.deepEqual(await readFile(eventFile),native);assert.deepEqual(await readFile(path.join(f.c.installRoot,'routes.json')),routes);assert.deepEqual(await readFile(path.join(f.c.installRoot,'active-connection.json')),active);
+ const {runLabus}=await import('../../src/labus.ts');let text='';const exit=await runLabus(['connect','list','--provider','codex','--include-archived'],{stdout:{write:(s:string)=>text+=s},stderr:{write:()=>{}}},{context:f.c,env:{CODEX_THREAD_ID:f.source.sessionId},connectionDeps:f.deps});assert.equal(exit,0);const all=JSON.parse(text).data;assert.equal(all.connections.length,2);assert.equal(all.connections.find((x:any)=>x.connectionId===id).archive.disposition,'tracking_retired_unverified');
+ assert.deepEqual(await api.archiveConnectionHistory(f.c,id,hash(original),f.deps),receipt);await assert.rejects(api.previewConnectionSwitch(f.c,f.source,id,f.deps),/connection_history_archived/);
+});
+for(const mode of ['active','changed_snapshot','unfinished'])test('history archive refuses '+mode+' without hiding it',async t=>{
+ const f=await savedPairs(t),r=f.pairs[mode==='active'?0:1],file=path.join(f.c.installRoot,'connections',r.connectionId,'connection.json'),{hash}=await import('../../src/installation/paths.ts');
+ if(mode==='unfinished'){const store=new FileMessageStore(f.state(r),realClock);await store.putNew(createTask({messageId:randomUUID(),from:'codex',to:'claude',targetSessionId:r.claude.sessionId,body:'pending'},realClock));}
+ assert.equal(typeof api.archiveConnectionHistory,'function');await assert.rejects(api.archiveConnectionHistory(f.c,r.connectionId,mode==='changed_snapshot'?'0'.repeat(64):hash(await readFile(file)),f.deps),mode==='active'?/active_connection_cannot_archive/:mode==='unfinished'?/connection_has_unfinished_tasks/:/connection_archive_changed/);
+ assert.equal((await api.listConnections(f.c,f.source,f.deps)).connections.length,2);
+});
+test('changed archived connection is surfaced as an error instead of silently hidden',async t=>{
+ const f=await savedPairs(t),r=f.pairs[1],file=path.join(f.c.installRoot,'connections',r.connectionId,'connection.json'),{hash}=await import('../../src/installation/paths.ts');assert.equal(typeof api.archiveConnectionHistory,'function');await api.archiveConnectionHistory(f.c,r.connectionId,hash(await readFile(file)),f.deps);await writeFile(file,JSON.stringify({...r,createdAt:'2026-11-01T00:00:00.000Z'}));const result=await api.listConnections(f.c,f.source,f.deps);assert.equal(result.errors.length,1);assert.equal(result.archivedCount,0);
+});
+
+for(const mode of ['unmanaged_live','old_protocol','paused'])test('history archive refuses '+mode+' target service without a global marker',async t=>{
+ const f=await savedPairs(t),r=f.pairs[1],file=path.join(f.c.installRoot,'connections',r.connectionId,'connection.json'),{hash}=await import('../../src/installation/paths.ts');
+ const main=await startMain(f.state(r),{adapters:[],quiet:true,intervalMs:0});t.after(()=>main.close());if(mode==='paused')main.lifecycle.lastError='fixture_storage_pause';if(mode==='old_protocol'){const {unlink}=await import('node:fs/promises');await unlink(path.join(f.state(r),'diagnostic-endpoint.json'));}
+ await assert.rejects(api.archiveConnectionHistory(f.c,r.connectionId,hash(await readFile(file)),f.deps),/connection_native_work_outstanding/);
+ assert.equal((await requestBus(f.state(r),{requestId:randomUUID(),op:'health'})).ok,true);assert.equal((await api.listConnections(f.c,f.source,f.deps)).connections.length,2);
+});

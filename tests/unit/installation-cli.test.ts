@@ -9,3 +9,8 @@ test('archived connection stays disconnected in status and doctor when its servi
  const selected=await selectConnection(context,self,peer,{self});await disconnect(context,selected.connectionId);const file=path.join(context.installRoot,'connections',selected.connectionId,'connection.json'),before=await readFile(file);
  for(const op of ['status','doctor']){let out='';const exit=await runLabus([op],{stdout:{write(s:string){out+=s;}},stderr:{write(){}}},{context,env:{}});assert.equal(exit,0);const r=JSON.parse(out);assert.equal(r.phase,'disconnected');assert.equal(r.data.connection.phase,'disconnected');assert.ok(r.nextAction.includes('connect'));assert.deepEqual(await readFile(file),before);}
 });
+
+
+test('include-archived is a read-only list option and cannot affect other operations',async t=>{
+ const root=await temp(t),context={home:root,installRoot:path.join(root,'i'),sourceRoot:root,nodeExe:process.execPath};for(const args of [['ask'],['doctor'],['connect','switch'],['connect','discover']]){let out='';const exit=await runLabus([...args,'--include-archived'],{stdout:{write:s=>out+=s},stderr:{write:()=>{}}},{context,env:{}});assert.equal(exit,2);assert.equal(JSON.parse(out).errorCode,'unexpected_option');}
+});

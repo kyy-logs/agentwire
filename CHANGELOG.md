@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — Agent integrations and local usability (2026-11-20)
+
+- Centralize built-in discovery, native identity policies, pairing proof,
+  lifecycle metadata, and Adapter/EvidenceReader assembly in `src/agents/`.
+  Existing Codex/Claude storage and permission boundaries remain unchanged;
+  this is not arbitrary third-agent support.
+- Add evidence-based task waiting explanations and separate pairing outcomes
+  from notification delivery. Keep uncertain writes paused without replay.
+- Retain explicit historical tracking archives, native lifecycle recovery,
+  bounded wake scheduling, and payload-free timing diagnostics.
+- Reduce Windows Hook startup overhead with a safe direct-Node launcher and
+  lazy pairing imports, keeping encoded fallback for unsupported paths.
+- Keep local acceptance artifacts out of source control.
+
+Original-window adapter regression on 2026-11-20 verified both built-in
+transport probes and a forward same-task followup (375 to 376), including exact
+native executions and delivered replies. The user additionally reported their
+remaining real-use checks complete; those are user-reported rather than a new
+independent recording. Installation and clean-reinstall evidence is tracked
+separately. Development branch only; the existing v0.1.1 release is unchanged.
+
 ## Unreleased — local connections and recovery
 
 - Add saved-connection listing, reviewed idle switching and independent read-only

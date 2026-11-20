@@ -1,4 +1,8 @@
 const actions:Record<string,[string,string]>={
+ pairing_code_used:['连接码已使用，本次兑换未执行；原配对是否仍有效需单独核对。','inspect_current_pairing_before_generating_a_new_code_do_not_redeem_again'],
+ pairing_code_expired:['连接码已过期，本次兑换未执行。','generate_a_new_code_in_target_chat'],
+ pairing_code_invalid:['未找到可用的连接码，本次兑换未执行。','check_current_code_or_generate_a_new_one_in_target_chat'],
+ pairing_intent_expired:['本次原生配对请求已过期，不能继续执行。','submit_a_new_native_pairing_input_do_not_reuse_expired_request'],
  pairing_worker_start_requires_check:['配对请求已登记，但后台执行器启动中断；未确认兑换成功。','inspect_exact_request_and_native_hook_definition_trust_do_not_redeem_or_retry_automatically'],
  pairing_identity_unconfirmed:['本次配对输入尚未通过原生身份核验。','check_current_native_hook_request_and_expiry_do_not_guess_session'],
  pairing_activation_requires_check:['配对激活状态需要核对，暂不能确认连接已建立。','doctor_then_inspect_exact_activation_routes_and_bindings_do_not_replay'],
@@ -8,7 +12,7 @@ const actions:Record<string,[string,string]>={
  pairing_storage_access_denied:['当前执行环境无法写入配对状态。','request_native_execution_approval_do_not_change_permissions_or_replay_expired_request'],
  connection_has_unfinished_tasks:['连接中仍有未完成或交付待核对的消息。','inspect_original_tasks_wait_or_reconcile_do_not_auto_stop_or_resend'],
  connection_native_work_outstanding:['Bus 已结束等待，但原生 Agent 的工作尚无结束证据。','inspect_native_window_and_original_task_do_not_auto_archive'],
- connection_storage_requires_check:['连接历史存在损坏、未处理事件或隔离记录。','doctor_then_inspect_original_connection_storage_do_not_clear_history'],
+ connection_storage_requires_check:['连接状态待核对：历史中存在未处理记录或异常，尚不能确定具体原因。','doctor_then_inspect_original_connection_storage_do_not_clear_history'],
  connection_bindings_require_check:['保存的原生会话绑定缺失或与目标连接不一致。','doctor_then_inspect_exact_saved_bindings_do_not_guess_session'],
  connection_routes_require_check:['当前路由与活动连接不一致。','doctor_then_inspect_active_pointer_and_routes_do_not_overwrite'],
  switch_preview_changed:['连接或绑定在预览后发生变化，旧预览未执行。','connect_list_then_create_a_new_switch_preview'],
@@ -25,4 +29,4 @@ const actions:Record<string,[string,string]>={
  bus_diagnostic_protocol_unverified:['运行中的 Bus 尚未确认支持只读诊断协议。','review_runtime_update_and_exact_service_restart_do_not_probe_unknown_operations'],
  service_storage_requires_check:['本地 Bus 已因存储或生命周期异常暂停，不能安全切换。','doctor_then_inspect_original_storage_do_not_stop_or_clear_history'],
 };
-export function errorGuidance(code:string){const [summary,nextAction]=actions[code]||['操作尚未得到确认，请保留原状态并检查诊断。','doctor_then_inspect_original_error_do_not_blindly_retry'];return {summary,nextAction};}
+export function errorGuidance(code:string){const [summary,nextAction]=actions[code]||['操作尚未得到确认，请保留原状态并检查诊断。','doctor_then_inspect_original_error_do_not_blindly_retry'];const nextSteps:Record<string,string>={pairing_code_used:'先查询当前配对状态，不要重复使用同一码。',pairing_code_expired:'请在目标聊天重新生成连接码，再在另一方兑换。',pairing_code_invalid:'请核对连接码；如已失效，在目标聊天重新生成。',pairing_intent_expired:'请重新从聊天发起配对输入，不要复用过期请求。',pairing_identity_unconfirmed:'请检查本次聊天的 Hook 和原生输入，不要猜测或换用其他会话。',pairing_target_unavailable:'请打开或恢复指定聊天，再核对状态；不要自动选择其他窗口。'};return {summary,nextAction,nextStep:nextSteps[code]||'请保留当前状态，先运行 doctor 核对原因，不要盲目重试。'};}

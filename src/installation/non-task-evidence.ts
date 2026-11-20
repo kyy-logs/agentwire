@@ -27,7 +27,7 @@ function emptyDesktopPagePrelude(tools:any[],turn:string){
  }
  return tools[0].id!==tools[1].id&&tools[0].internal_chat_message_metadata_passthrough.create_time<=tools[1].internal_chat_message_metadata_passthrough.create_time;
 }
-/** A composer can receive further human inputs while running (including native
+/** A human composer or desktop question answer can receive further inputs (including native
  * approval answers). Every input must prove its own origin; wording is unused.
  * Multiple inputs additionally need distinct native IDs and ordered times so
  * duplicated or ambiguous transcript rows cannot be dismissed as steering. */
@@ -95,7 +95,8 @@ async function nativeProofs(c:InstallContext,p:Provider,session:string,cwd:strin
    for(const [id,t] of turns){if(t.starts.length||t.inputs.length||t.ends.length||t.tools.length)seen.set(id,(seen.get(id)||0)+1);let nativeOutcome:NonTaskProof['nativeOutcome']='response_ended';
     if(p==='codex'){
      if(t.starts.length!==1||t.ends.length!==1)continue;const a=t.starts[0].turn_attribution,end=t.ends[0];
-     if(!a||a.turn_id!==id||a.turn_trigger!=='composer'||a.parent_turn_id!==null||a.initiating_agent_path!==null||a.root_turn_id!==id||path.relative(path.resolve(t.cwd??meta.cwd),path.resolve(cwd))!==''||end.turn_id!==id)continue;
+     const humanTrigger=a?.turn_trigger==='composer'||a?.turn_trigger==='send_user_message_async_question'&&meta.source==='vscode'&&t.inputs.length>0;
+     if(!a||a.turn_id!==id||!humanTrigger||a.parent_turn_id!==null||a.initiating_agent_path!==null||a.root_turn_id!==id||path.relative(path.resolve(t.cwd??meta.cwd),path.resolve(cwd))!==''||end.turn_id!==id)continue;
      nativeOutcome=end.type==='turn_aborted'?'interrupted':'response_ended';
      if(t.inputs.length===0){if(nativeOutcome!=='interrupted'||!(t.tools.length===0||meta.source==='vscode'&&emptyDesktopPagePrelude(t.tools,id)))continue;}
      else if(!humanComposerInputs(t.inputs,id))continue;

@@ -1,19 +1,21 @@
 import path from 'node:path';
 import {readFile,unlink} from 'node:fs/promises';
 import {isDeepStrictEqual} from 'node:util';
-import {readConnection,sameChat,activeConnection} from '../installation/connections.ts';
+import {readConnection,activeConnection} from '../installation/connections.ts';
 import {assertIdle,inspectConnectionBindings,inspectConnectionRoutes,stopBus} from '../installation/connection-management.ts';
 import {optional,safePath,hash,jsonBytes,atomicBytes} from '../installation/paths.ts';
-import type {InstallContext,ConnectionRecord,Candidate} from '../installation/model.ts';
+import type {InstallContext,ConnectionRecord} from '../installation/model.ts';
 import type {PairActivation,PairDeps,PairTransaction} from './model.ts';
 
 const recordFile=(c:InstallContext,id:string)=>path.join(c.installRoot,'connections',id,'connection.json');
 const guardFile=(c:InstallContext)=>path.join(c.installRoot,'connection-transition.json');
 const marker=(a:PairActivation)=>({schemaVersion:1,operationId:a.activationId,from:a.replacement!.connectionId,to:a.connectionId,phase:'pair_replacing'});
 
-/** Preflight is read-only and must finish before claiming the new code. */
-export async function inspectReplacement(c:InstallContext,old:ConnectionRecord,source:Candidate):Promise<NonNullable<PairActivation['replacement']>>{
- if(!sameChat(old[source.provider],source))throw Error('source_session_mismatch');
+/** Called only after the native redeem intent and both new targets are verified.
+ * A fresh human redemption may replace the installation's single active pair
+ * even when neither new chat belongs to the old pair. Read-only preflight must
+ * finish before claiming the code. */
+export async function inspectReplacement(c:InstallContext,old:ConnectionRecord):Promise<NonNullable<PairActivation['replacement']>>{
  if(!['paired','ready'].includes(old.phase)||old.errorCode)throw Error('active_connection_exists');
  await inspectConnectionRoutes(c,old);if(old.schemaVersion===2)await inspectConnectionBindings(c,old);await assertIdle(c,old);
  const before=await readFile(await safePath(c.installRoot,recordFile(c,old.connectionId)));

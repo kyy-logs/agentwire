@@ -20,7 +20,17 @@ function operationDir(c:InstallContext,id:string){assertId(id);return path.join(
 async function save(c:InstallContext,op:Operation){await atomicBytes(path.join(operationDir(c,op.operationId),'operation.json'),jsonBytes(op));}
 function targets(c:InstallContext){return {codex:path.join(c.home,'.codex','hooks.json'),claude:path.join(c.home,'.claude','settings.json'),codexSkill:path.join(c.home,'.agents','skills','labus','SKILL.md'),claudeSkill:path.join(c.home,'.claude','skills','labus','SKILL.md')};}
 function shellArg(s:string){if(/["$`\r\n%]/.test(s))throw Error('unsupported_hook_path');return '"'+s.replaceAll('\\','/')+'"';}
-function hookGroups(c:InstallContext,provider:Provider){const l=resolveLayout(c);let command=shellArg(c.nodeExe)+' --experimental-strip-types '+shellArg(path.join(l.runtime,'src','installation','hook-router.ts'))+' --root '+shellArg(l.root)+' --provider '+provider;if(provider==='codex'&&process.platform==='win32'){const psArg=(s:string)=>"'"+s.replaceAll("'","''")+"'";const script='& '+[c.nodeExe,'--experimental-strip-types',path.join(l.runtime,'src','installation','hook-router.ts'),'--root',l.root,'--provider',provider].map(psArg).join(' ')+'; exit $LASTEXITCODE';command='powershell.exe -NoProfile -NonInteractive -EncodedCommand '+Buffer.from(script,'utf16le').toString('base64');}return Object.fromEntries((provider==='codex'?['UserPromptSubmit','Stop','Interrupt']:['UserPromptSubmit','Stop','StopFailure']).map(event=>[event,[{hooks:[{type:'command',command,timeout:event==='UserPromptSubmit'?15:5}]}]]));}
+function hookGroups(c:InstallContext,provider:Provider){
+ const l=resolveLayout(c),windowsCodex=provider==='codex'&&process.platform==='win32';
+ // A quoted executable token is not callable in PowerShell. Only this narrow
+ // absolute-path grammar is safe unquoted in both PowerShell and cmd; keep all
+ // arguments quoted. Smart double quotes and cmd delayed expansion require the
+ // encoded fallback, as do executable paths outside this narrow grammar.
+ const direct=windowsCodex&&/^[A-Za-z]:[\\/][A-Za-z0-9_.\\/-]+$/.test(c.nodeExe)&&![l.root,l.runtime].some(value=>/[!\u201c-\u201e]/.test(value));
+ let command=(direct?c.nodeExe.replaceAll('\\','/'):shellArg(c.nodeExe))+' --experimental-strip-types '+shellArg(path.join(l.runtime,'src','installation','hook-router.ts'))+' --root '+shellArg(l.root)+' --provider '+provider;
+ if(windowsCodex&&!direct){const psArg=(s:string)=>"'"+s.replaceAll("'","''")+"'";const script='& '+[c.nodeExe,'--experimental-strip-types',path.join(l.runtime,'src','installation','hook-router.ts'),'--root',l.root,'--provider',provider].map(psArg).join(' ')+'; exit $LASTEXITCODE';command='powershell.exe -NoProfile -NonInteractive -EncodedCommand '+Buffer.from(script,'utf16le').toString('base64');}
+ return Object.fromEntries((provider==='codex'?['UserPromptSubmit','Stop','Interrupt']:['UserPromptSubmit','Stop','StopFailure']).map(event=>[event,[{hooks:[{type:'command',command,timeout:event==='UserPromptSubmit'?15:5}]}]]));
+}
 const commands=(group:any)=>JSON.stringify((group?.hooks||[]).map((h:any)=>[h.type,h.command,h.commandWindows]));
 function mergeHook(actual:any[],group:any,prior:any[],hasOwner:boolean){
  let changed=false;const matches=actual.filter(x=>same(x,group));if(matches.length>1||matches.length&&!hasOwner)throw Error('foreign_hook_group');
@@ -80,7 +90,23 @@ async function rollbackConfigurationOne(c:InstallContext,id:string,options:Optio
  for(const e of op.entries){if(op.rolledBackTargets.includes(e.target))continue;const current=e.kind==='path'?Buffer.from(await pathStore.get()):await optional(e.target);const h=current?hash(current):null;if(!op.appliedTargets.includes(e.target)&&owner.targets[e.target]?.operationId!==id){if(h!==e.before)throw Error('configuration_changed_requires_review');continue;}if(h===e.before){actions.push({entry:e,current,restore:current});continue;}let restore:Buffer|undefined;
  if(h===e.after){restore=e.before===null?undefined:await readFile(e.originalFile);if(restore&&hash(restore)!==e.before)throw Error('backup_mismatch');}
  else if(e.kind==='path'){const bin=resolveLayout(c).bin;restore=Buffer.from((current?.toString()||'').split(';').filter(x=>!x||path.resolve(x).toLowerCase()!==bin.toLowerCase()).join(';'));}
- else if(e.kind==='hook'&&current){const value=JSON.parse(current.toString()),original=e.before===null?undefined:await readFile(e.originalFile);if(original&&hash(original)!==e.before)throw Error('backup_mismatch');const prior=original?JSON.parse(original.toString()).hooks||{}:{};for(const [event,groups] of Object.entries(e.groups||{})){const actual=value.hooks?.[event];if(!Array.isArray(actual))throw Error('hook_changed_requires_review');for(const group of groups){const matches=actual.map((x:any,i:number)=>same(x,group)?i:-1).filter((i:number)=>i>=0);if(matches.length!==1)throw Error('hook_changed_requires_review');if((prior[event]||[]).some((x:any)=>same(x,group)))continue;const old=(prior[event]||[]).filter((x:any)=>commands(x)===commands(group));if(old.length>1)throw Error('hook_changed_requires_review');actual.splice(matches[0],1,...old.filter((x:any)=>!actual.some((a:any)=>same(a,x))));}if(!actual.length)delete value.hooks[event];}restore=jsonBytes(value);}
+ else if(e.kind==='hook'&&current){
+  const value=JSON.parse(current.toString()),original=e.before===null?undefined:await readFile(e.originalFile);if(original&&hash(original)!==e.before)throw Error('backup_mismatch');
+  const prior=original?JSON.parse(original.toString()).hooks||{}:{},previousOwner=op.previousOwners?.[e.target];
+  const previousGroups=previousOwner?(await load(c,previousOwner.operationId)).entries.find(entry=>entry.target===e.target)?.groups||{}:{};
+  for(const [event,groups] of Object.entries(e.groups||{})){
+   const actual=value.hooks?.[event];if(!Array.isArray(actual))throw Error('hook_changed_requires_review');
+   for(const group of groups){
+    const matches=actual.map((x:any,i:number)=>same(x,group)?i:-1).filter((i:number)=>i>=0);if(matches.length!==1)throw Error('hook_changed_requires_review');if((prior[event]||[]).some((x:any)=>same(x,group)))continue;
+    // Launcher migrations change the command itself. Restore only exact prior
+    // owned groups present in this operation's verified backup, never foreign groups.
+    const old=(prior[event]||[]).filter((x:any)=>commands(x)===commands(group)||(previousGroups[event]||[]).some((owned:any)=>same(x,owned)));
+    if(old.length>1)throw Error('hook_changed_requires_review');actual.splice(matches[0],1,...old.filter((x:any)=>!actual.some((a:any)=>same(a,x))));
+   }
+   if(!actual.length)delete value.hooks[event];
+  }
+  restore=jsonBytes(value);
+ }
  else throw Error('owned_file_changed_requires_review');actions.push({entry:e,current,restore});}
  for(const {entry:e,current,restore} of actions){const latest=e.kind==='path'?Buffer.from(await pathStore.get()):await optional(e.target);if((latest?hash(latest):null)!==(current?hash(current):null))throw Error('configuration_changed_during_rollback');if(e.kind==='path')await setConfirmedPath(pathStore,restore?.toString()||'');else if(restore)await atomicBytes(e.target,restore);else if(latest)await unlink(e.target);const previous=op.previousOwners?.[e.target];if(previous&&restore!==undefined)owner.targets[e.target]={...previous,after:hash(restore)};else delete owner.targets[e.target];await atomicBytes(path.join(resolveLayout(c).install,'configuration-owner.json'),jsonBytes(owner));op.rolledBackTargets.push(e.target);await save(c,op);}
  op.status='rolled_back';await save(c,op);return op;

@@ -1,8 +1,8 @@
+import {createAgentRuntime} from './agents/registry.ts';
+import {recordTiming} from './latency.ts';
 import {reconcilePairStartup} from './pairing/worker.ts';
 import {createAppServer} from './native/app-server.ts';
 import type {AppServerClient} from './native/app-server.ts';
-import {createCodexEvidence} from './native/codex-evidence.ts';
-import {createClaudeEvidence} from './native/claude-evidence.ts';
 import {IdentityStore} from './native/identity-store.ts';
 import {NativeDispatcher} from './native/dispatcher.ts';
 import {CleanProcessor} from './lifecycle/clean-processor.ts';
@@ -20,8 +20,6 @@ import {FileMessageStore,atomicJson} from './store.ts';
 import {LocalBus} from './bus.ts';
 import {realClock} from './model.ts';
 import type {AgentAdapter,AgentBinding,Clock} from './model.ts';
-import {CodexAdapter,runChild} from './adapters/codex.ts';
-import {ClaudeAdapter,resolveClaude,postClaude} from './adapters/claude.ts';
 import {createObserver} from './observer.ts';
 import {statusPage} from './status.ts';
 import {FileLifecycleStore} from './lifecycle/store.ts';
@@ -39,7 +37,7 @@ async function codexExe(){
 }
 export async function startMain(root:string,options:MainOptions={}){
   const instanceId=randomUUID();
-  root=path.resolve(root);let clean:CleanProcessor|undefined,nativeClient:AppServerClient|undefined,workerPromise:Promise<void>|undefined;let bus:LocalBus|undefined,lifecycle:LifecycleProcessor|undefined,closing=false,working=false,storageError=false,initialized=false;const clock=options.clock||realClock;
+  root=path.resolve(root);let clean:CleanProcessor|undefined,nativeClient:AppServerClient|undefined,workerPromise:Promise<void>|undefined;let bus:LocalBus|undefined,lifecycle:LifecycleProcessor|undefined,closing=false,working=false,storageError=false,initialized=false;let requestWork=()=>{};const clock=options.clock||realClock;
   let installRoot=options.installRoot;
   if(!installRoot&&path.basename(root)==='state'&&path.basename(path.dirname(path.dirname(root)))==='connections'){
     try{const r=JSON.parse(await readFile(path.join(path.dirname(root),'connection.json'),'utf8'));if(r.connectionId===path.basename(path.dirname(root))&&[1,2].includes(r.schemaVersion))installRoot=path.dirname(path.dirname(path.dirname(root)));}catch(e:any){if(e.code!=='ENOENT')throw e;}
@@ -52,13 +50,14 @@ export async function startMain(root:string,options:MainOptions={}){
   };
   const ipc=await startIpc(root,async request=>{
     if(!bus||closing||!initialized)return {requestId:request.requestId,ok:false,errorCode:'bus_initializing_or_closing'};
-    const p=request.payload||{};
+    const p=request.payload||{},admissionStarted=performance.now();
     try{
       let data:any;
-      if(request.op==='accept'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.accept(p);await log('accepted',{messageId:data.message.messageId,state:data.state});}
-      else if(request.op==='reply-current'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.replyCurrent(p);await log('accepted',{messageId:data.message.messageId,state:data.state});}
+      if(request.op==='accept'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.accept(p);await log('accepted',{messageId:data.message.messageId,state:data.state});requestWork();await recordTiming(root,{stage:'admission_committed',messageId:data.message.messageId,taskId:data.message.taskId,state:data.state,durationsMs:{admissionMs:performance.now()-admissionStarted}});}
+      else if(request.op==='reply-current'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.replyCurrent(p);await log('accepted',{messageId:data.message.messageId,state:data.state});requestWork();await recordTiming(root,{stage:'admission_committed',messageId:data.message.messageId,taskId:data.message.taskId,state:data.state,durationsMs:{admissionMs:performance.now()-admissionStarted}});}
+      else if(request.op==='wake'){requestWork();data={status:'wake_requested'};}
       else if(request.op==='bind'){await admissionGuard();data=await bus.bind(p);}
-      else if(request.op==='status'){data=statusPage(await bus.status(p.taskId),p);for(const item of data.items){if(item.activeAttemptId){const intent=await bus.nativeDispatcher?.store.get(item.activeAttemptId);if(intent)item.native={attemptId:intent.attemptId,transportId:intent.transportId,connectionId:intent.connectionId,phase:intent.phase,nativeExecutionId:intent.nativeExecutionId,errorCode:intent.errorCode};}}}
+      else if(request.op==='status'){data=statusPage(await bus.status(),p,bus.clock.now());for(const item of data.items){if(item.activeAttemptId){const intent=await bus.nativeDispatcher?.store.get(item.activeAttemptId);if(intent)item.native={attemptId:intent.attemptId,transportId:intent.transportId,connectionId:intent.connectionId,phase:intent.phase,nativeExecutionId:intent.nativeExecutionId,errorCode:intent.errorCode};}}}
       else if(request.op==='check')data=await bus.check(p.messageId);
       else if(request.op==='stop'){await bus.stop(p.taskId);data={taskId:p.taskId,status:'bus_stopped',nativeAgentCancelled:false};}
       else if(request.op==='health')data={instanceId,pid:process.pid,stateRoot:root,status:storageError?'storage_requires_check':'running',bindings:[...bus.bindings.values()],lifecycle:await lifecycle?.health()};
@@ -74,15 +73,12 @@ export async function startMain(root:string,options:MainOptions={}){
   try{
     let bindings:AgentBinding[]=[];
     try{const saved=JSON.parse(await readFile(path.join(root,'bindings.json'),'utf8'));if(saved.schemaVersion!==1||!Array.isArray(saved.bindings))throw new Error('invalid_bindings');bindings=saved.bindings;}catch(e){if((e as any).code!=='ENOENT')throw e;}
-    const executable=options.codexExe||await codexExe();nativeClient=options.native?.client||createAppServer({exe:executable});const readers=options.native?.readers||{codex:createCodexEvidence(nativeClient),claude:createClaudeEvidence({claudeHome:path.join(os.homedir(),'.claude')})};const identities=new IdentityStore(root,clock),dispatcher=new NativeDispatcher(identities,readers);
+    const executable=options.codexExe||await codexExe();nativeClient=options.native?.client||createAppServer({exe:executable});
     const observe=createObserver(),command={cliPath:fileURLToPath(new URL('./cli.ts',import.meta.url)),stateRoot:root};
-    const adapters=options.adapters||[
-      new CodexAdapter(runChild,{exe:executable,appServer:nativeClient,observe,command}),
-      new ClaudeAdapter({resolve:resolveClaude,post:postClaude,command,observe:async(b,r)=>{
-        for(let i=0;i<8;i++){const result=await observe(b,r);if(result.status==='submitted')return result;if(i<7)await new Promise(done=>setTimeout(done,200));}return {status:'unknown'};
-      }})
-    ];
-    bus=new LocalBus({nativeDispatcher:dispatcher,connectionId:options.connectionId,newAutoWireVersion:options.newAutoWireVersion,store:new FileMessageStore(root,clock),bindings,adapters,clock,saveBindings:b=>atomicJson(path.join(root,'bindings.json'),{schemaVersion:1,bindings:b})});
+    const runtime=await createAgentRuntime({client:nativeClient,exe:executable,home:os.homedir(),observe,command});
+    const readers=options.native?.readers||runtime.readers,adapters=options.adapters||runtime.adapters;
+    const identities=new IdentityStore(root,clock),dispatcher=new NativeDispatcher(identities,readers);
+    bus=new LocalBus({onTiming:event=>recordTiming(root,event),nativeDispatcher:dispatcher,connectionId:options.connectionId,newAutoWireVersion:options.newAutoWireVersion,store:new FileMessageStore(root,clock),bindings,adapters,clock,saveBindings:b=>atomicJson(path.join(root,'bindings.json'),{schemaVersion:1,bindings:b})});
     const report=await bus.recover();storageError=report.quarantinedFiles.length>0;await log('started',{recovery:report});
     const controlExecution=installRoot?(async(ref:any)=>{const c={installRoot:installRoot!,home:os.homedir(),sourceRoot:installRoot!,nodeExe:process.execPath},id=options.connectionId||path.basename(path.dirname(root));return await isPairControlExecution(c,id,ref)||await isSwitchControlExecution(c,id,ref);}):undefined;
     const nonTaskExecution=installRoot?createNonTaskVerifier({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath},options.connectionId||path.basename(path.dirname(root))):undefined;
@@ -93,7 +89,19 @@ export async function startMain(root:string,options:MainOptions={}){
     const interval=options.intervalMs??500;
     await atomicJson(path.join(root,'diagnostic-endpoint.json'),{schemaVersion:1,operation:'diagnostic-health',instanceId,pid:process.pid,stateRoot:root,tokenSha256:createHash('sha256').update(await readFile(path.join(root,'auth.token'))).digest('hex')});
     let lastStartupScan=0,startupErrorLogged=false;
-    if(interval>0)timer=setInterval(()=>{if(working||closing)return;working=true;workerPromise=(async()=>{if(installRoot&&Date.now()-lastStartupScan>=1000){lastStartupScan=Date.now();try{await reconcilePairStartup({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath});}catch{if(!startupErrorLogged){startupErrorLogged=true;await log('pair_startup_monitor_requires_check');}}}if(storageError||closing)return;await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();})().catch(async(error)=>{if(error?.message==='connection_switch_requires_check')return;storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);},interval);
+    // A wake is a hint only: persisted records and native evidence remain authoritative.
+    // Keep one drain, retaining a wake arriving during any await in the current cycle.
+    let requested=false;
+    const work=async()=>{if(installRoot&&Date.now()-lastStartupScan>=1000){lastStartupScan=Date.now();try{await reconcilePairStartup({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath});}catch{if(!startupErrorLogged){startupErrorLogged=true;await log('pair_startup_monitor_requires_check');}}}if(storageError||closing)return;await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();};
+    requestWork=()=>{
+      if(interval<=0||closing)return;
+      requested=true;if(working)return;working=true;
+      workerPromise=(async()=>{
+        await new Promise<void>(resolve=>setImmediate(resolve));
+        while(requested&&!closing){requested=false;await work();}
+      })().catch(async(error)=>{if(error?.message==='connection_switch_requires_check')return;storageError=true;await log('storage_or_tick_error',{status:'paused'});}).finally(()=>working=false);
+    };
+    if(interval>0)timer=setInterval(requestWork,interval);
     if(options.signals!==false){process.on('SIGINT',signal);process.on('SIGTERM',signal);}
     initialized=true;
     if(!options.quiet)process.stdout.write(JSON.stringify({status:'running',stateRoot:root,recovery:report})+'\n');

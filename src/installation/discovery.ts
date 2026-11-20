@@ -1,17 +1,7 @@
-import {open,opendir,readFile} from 'node:fs/promises';import path from 'node:path';import {assertId} from '../model.ts';import {safePath} from './paths.ts';import type {InstallContext,Provider,Candidate} from './model.ts';
-async function boundedBytes(file:string,tail=false){const h=await open(file,'r');try{const size=(await h.stat()).size,n=Math.min(size,262144),b=Buffer.alloc(n);await h.read(b,0,n,tail?size-n:0);const text=b.toString('utf8');return tail&&size>n?text.slice(text.indexOf('\n')+1):text;}finally{await h.close();}}
-async function names(dir:string,limit:number,strict=false){const out:string[]=[];let d;try{d=await opendir(dir);}catch(e:any){if(e.code==='ENOENT')return out;throw e;}try{for await(const entry of d){if(entry.isFile()&&!entry.isSymbolicLink())out.push(entry.name);if(strict&&out.length>limit)throw Error('discovery_limit');if(!strict&&out.length>=limit)break;}}finally{await d.close().catch(()=>{});}return out;}
-function idValid(id:string){try{assertId(id);return true;}catch{return false;}}
-/** With sessionId this is an exact lookup, independent of UI count/history
- * caps. Native byte/directory bounds remain; an incomplete uniqueness scan fails. */
+import {assertId} from '../model.ts';
+import {getAgent} from '../agents/registry.ts';
+import type {InstallContext,Provider,Candidate} from './model.ts';
+/** Exact lookup keeps provider-specific bounds and ambiguity; it never selects a latest chat. */
 export async function discoverCandidates(c:InstallContext,provider:Provider,sessionId?:string):Promise<Candidate[]>{
- if(!['codex','claude'].includes(provider))throw Error('invalid_provider');if(sessionId!==undefined)assertId(sessionId);const out:Candidate[]=[];
- if(provider==='claude'){const dir=path.join(c.home,'.claude','sessions');for(const name of (await names(dir,2000,sessionId!==undefined)).filter(x=>/^\d+\.json$/.test(x))){try{const file=await safePath(c.home,path.join(dir,name)),r=JSON.parse(await boundedBytes(file));if(!idValid(r.sessionId)||sessionId!==undefined&&r.sessionId!==sessionId||r.pid+'.json'!==name||!Number.isInteger(r.pid)||!path.isAbsolute(r.cwd||''))continue;try{process.kill(r.pid,0);}catch{continue;}out.push({provider,sessionId:r.sessionId,workspaceRoot:r.cwd,...(typeof r.name==='string'?{title:r.name.slice(0,120)}:{}),...(typeof r.updatedAt==='string'?{lastActiveAt:r.updatedAt}:{}),availability:'live_endpoint'});}catch{}}return sessionId!==undefined?out:out.slice(0,20);}
- let text;try{text=await boundedBytes(await safePath(c.home,path.join(c.home,'.codex','session_index.jsonl')),true);}catch(e:any){if(e.code==='ENOENT')return [];throw e;}
- const unique=new Map<string,any>(),lines=text.trim().split(/\r?\n/);for(const line of sessionId!==undefined?lines:lines.slice(-200)){try{const r=JSON.parse(line);if(idValid(r.id))unique.set(r.id,r);}catch{}}
- const ordered=[...unique.values()].sort((a,b)=>String(b.updated_at||'').localeCompare(String(a.updated_at||''))),rows=sessionId!==undefined?ordered.filter(r=>r.id===sessionId):ordered.slice(0,20),cache=new Map<string,string[]>();
- for(const r of rows){let cwd=typeof r.cwd==='string'?r.cwd:undefined;
- if(!cwd){const ms=Number.parseInt(r.id.replaceAll('-','').slice(0,12),16);const d=new Date(ms);if(Number.isFinite(+d))for(const offset of [0,86400000,-86400000]){const date=new Date(+d+offset).toISOString().slice(0,10).replaceAll('-',path.sep),dir=path.join(c.home,'.codex','sessions',date);let files=cache.get(dir);if(!files){files=await names(dir,2000);cache.set(dir,files);}const file=files.find(n=>n.includes(r.id)&&n.endsWith('.jsonl'));if(!file)continue;try{const first=(await boundedBytes(await safePath(c.home,path.join(dir,file)))).split('\n',1)[0],meta=JSON.parse(first);if(meta.type==='session_meta'&&meta.payload?.id===r.id)cwd=meta.payload.cwd;}catch{}break;}}
- if(typeof cwd!=='string'||!path.isAbsolute(cwd))continue;out.push({provider,sessionId:r.id,workspaceRoot:cwd,...(typeof r.thread_name==='string'?{title:r.thread_name.slice(0,120)}:{}),lastActiveAt:r.updated_at,availability:'candidate'});}
- return out;
+ const agent=getAgent(provider);if(sessionId!==undefined)assertId(sessionId);return agent.discover(c,sessionId);
 }

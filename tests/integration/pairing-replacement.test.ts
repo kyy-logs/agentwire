@@ -12,40 +12,41 @@ import {optional} from '../../src/installation/paths.ts';
 import {FileMessageStore} from '../../src/store.ts';
 import {createTask,realClock} from '../../src/model.ts';
 
-async function replacement(t:any,provider:'codex'|'claude'='codex',intervalMs=0){
+async function replacement(t:any,provider:'codex'|'claude'='codex',intervalMs=0,newSource=false){
  const f=await pairingFixture(t,{intervalMs}),old=await redeemCode(f.c,f.redeemer.intentId,f.deps);
- const source=f.peers.find(p=>p.provider===provider)!,peer={...f.peers.find(p=>p.provider!==provider)!,sessionId:randomUUID(),workspaceRoot:path.join(f.root,'new peer')};
- f.peers.push(peer);const issue=f.make(peer,{kind:'issue'});await capturePairIntent(f.c,issue,f.deps);const code=await issueCode(f.c,issue.intentId,f.deps);
+ const previousSource=f.peers.find(p=>p.provider===provider)!,source=newSource?{...previousSource,sessionId:randomUUID(),workspaceRoot:path.join(f.root,'new source')}:previousSource,peer={...f.peers.find(p=>p.provider!==provider)!,sessionId:randomUUID(),workspaceRoot:path.join(f.root,'new peer')};
+ if(newSource)f.peers.push(source);f.peers.push(peer);const issue=f.make(peer,{kind:'issue'});await capturePairIntent(f.c,issue,f.deps);const code=await issueCode(f.c,issue.intentId,f.deps);
  const redeem=f.make(source,{kind:'redeem',target:peer.provider,code:code.code});await capturePairIntent(f.c,redeem,f.deps);
  const oldState=path.join(f.c.installRoot,'connections',old.connectionId,'state');
  const deps={...f.deps,shutdown:async(h:any)=>{const main=f.services.get(h.stateRoot);if(!main)throw Error('fixture_service_missing');await main.close();return {status:'closed'};}};
  return {...f,old,source,peer,code,redeem,oldState,deps};
 }
 
-for(const provider of ['codex','claude'] as const)test('fresh code automatically replaces an idle connection from '+provider+' and preserves history',async t=>{
- const f=await replacement(t,provider),store=new FileMessageStore(f.oldState,realClock),r=(await store.putNew(createTask({messageId:randomUUID(),from:'codex',to:'claude',targetSessionId:f.old.claude.sessionId,body:'history'},realClock))).record;
+for(const newSource of [false,true])for(const provider of ['codex','claude'] as const)test('fresh code automatically replaces an idle connection from '+provider+' with new source='+newSource+' and preserves history',async t=>{
+ const f=await replacement(t,provider,0,newSource),store=new FileMessageStore(f.oldState,realClock),r=(await store.putNew(createTask({messageId:randomUUID(),from:'codex',to:'claude',targetSessionId:f.old.claude.sessionId,body:'history'},realClock))).record;
  await store.replace({...r,state:'failed',errorCode:'fixture_history'});const file=path.join(f.oldState,'messages',r.message.messageId+'.json'),before=await readFile(file);
  const next=await redeemCode(f.c,f.redeem.intentId,f.deps);
  assert.notEqual(next.connectionId,f.old.connectionId);assert.equal(next.phase,'paired');assert.equal(next[f.source.provider].sessionId,f.source.sessionId);assert.equal(next[f.peer.provider].sessionId,f.peer.sessionId);
  assert.equal((await readConnection(f.c,f.old.connectionId)).phase,'disconnected');assert.equal((await activeConnection(f.c)).connectionId,next.connectionId);assert.deepEqual(await readFile(file),before);
  assert.equal(await optional(path.join(f.c.installRoot,'connection-transition.json')),undefined);assert.equal(f.sent.length,0);
+ const routes=JSON.parse(await readFile(path.join(f.c.installRoot,'routes.json'),'utf8')).routes;assert.equal(routes.length,2);for(const route of routes){assert.equal(route.connectionId,next.connectionId);assert.equal(route.sessionId,next[route.provider as 'codex'|'claude'].sessionId);}
  assert.equal((await redeemCode(f.c,f.redeem.intentId,f.deps)).connectionId,next.connectionId);
 });
 
-for(const mode of ['pending','uncertain','native','artifact','foreign_source','offline_target'] as const)test('replacement refuses '+mode+' before consuming code or changing old routes',async t=>{
- const f=await replacement(t),store=new FileMessageStore(f.oldState,realClock);
+for(const newSource of [false,true])for(const mode of ['pending','uncertain','native','artifact','offline_target'] as const)test('replacement refuses '+mode+' with new source='+newSource+' before consuming code or changing old routes',async t=>{
+ const f=await replacement(t,'codex',0,newSource),store=new FileMessageStore(f.oldState,realClock);
  if(['pending','uncertain','native'].includes(mode)){const r=(await store.putNew(createTask({messageId:randomUUID(),from:'codex',to:'claude',targetSessionId:f.old.claude.sessionId,body:'work'},realClock))).record;if(mode!=='pending')await store.replace({...r,state:mode==='uncertain'?'needs_check':'stopped',attempts:1,receipt:{status:'unknown'}});}
  if(mode==='artifact'){const dir=path.join(f.oldState,'lifecycle','inbox');await mkdir(dir,{recursive:true});await writeFile(path.join(dir,'unfinished.tmp'),'partial');}
- let intent=f.redeem;if(mode==='foreign_source'){const other={...f.source,sessionId:randomUUID()};f.peers.push(other);intent=f.make(other,{kind:'redeem',target:f.peer.provider,code:f.code.code});await capturePairIntent(f.c,intent,f.deps);}
+ const intent=f.redeem;
  const deps=mode==='offline_target'?{...f.deps,discover:async(c:any,p:any,id:any)=>id===f.peer.sessionId?[]:f.deps.discover(c,p,id)}:f.deps;
  const files=['active-connection.json','routes.json',`connections/${f.old.connectionId}/connection.json`],before=await Promise.all(files.map(x=>readFile(path.join(f.c.installRoot,x))));
- await assert.rejects(redeemCode(f.c,intent.intentId,deps),new RegExp(mode==='pending'||mode==='uncertain'?'connection_has_unfinished_tasks':mode==='native'?'connection_native_work_outstanding':mode==='artifact'?'connection_storage_requires_check':mode==='foreign_source'?'source_session_mismatch':'pairing_target_unavailable'));
+ await assert.rejects(redeemCode(f.c,intent.intentId,deps),new RegExp(mode==='pending'||mode==='uncertain'?'connection_has_unfinished_tasks':mode==='native'?'connection_native_work_outstanding':mode==='artifact'?'connection_storage_requires_check':'pairing_target_unavailable'));
  for(let i=0;i<files.length;i++)assert.deepEqual(await readFile(path.join(f.c.installRoot,files[i])),before[i]);
  const s=await readPairState(f.c);assert.equal(s.invitations.find(i=>i.invitationId===f.code.invitationId)!.state,'available');assert.equal(s.activations.length,1);assert.equal(await optional(path.join(f.c.installRoot,'connection-transition.json')),undefined);
 });
 
-for(const step of ['claimed','replacement_guarded','replacement_stopped','replacement_routes_cleared','replacement_record_disconnected','replacement_detached','connection_written','bound','routes_written','active_written','connection_paired'])test('replacement recovers the same activation after crash at '+step,async t=>{
- const f=await replacement(t);await assert.rejects(redeemCode(f.c,f.redeem.intentId,{...f.deps,afterStep:async(s:any)=>{if(s===step)throw Error('injected_crash');}}),/injected_crash/);
+for(const newSource of [false,true])for(const step of ['claimed','replacement_guarded','replacement_stopped','replacement_routes_cleared','replacement_record_disconnected','replacement_detached','connection_written','bound','routes_written','active_written','connection_paired'])test('replacement recovers the same activation with new source='+newSource+' after crash at '+step,async t=>{
+ const f=await replacement(t,'codex',0,newSource);await assert.rejects(redeemCode(f.c,f.redeem.intentId,{...f.deps,afterStep:async(s:any)=>{if(s===step)throw Error('injected_crash');}}),/injected_crash/);
  const a=(await readPairState(f.c)).activations.find(x=>x.redeemIntentId===f.redeem.intentId)!;assert.ok(a);f.clock.value+=7200000;
  const next=await recoverPairing(f.c,a.activationId,f.deps);assert.equal(next.phase,'paired');assert.equal(next.connectionId,a.connectionId);assert.equal((await readConnection(f.c,f.old.connectionId)).phase,'disconnected');assert.equal((await readPairState(f.c)).activations.length,2);assert.equal(await optional(path.join(f.c.installRoot,'connection-transition.json')),undefined);assert.equal(f.sent.length,0);
 });

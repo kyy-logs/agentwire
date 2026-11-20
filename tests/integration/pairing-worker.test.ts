@@ -82,3 +82,27 @@ test('late launch error cannot overwrite a worker result that already committed'
  await routeHook(f.c,'claude',[Buffer.from(JSON.stringify(event))],{...f.deps,stdout:{write:s=>output+=s},scheduleWorker:async()=>{await api.runPairWorker(f.c,f.deps);throw Error('late_launch_uncertainty');}} as any);
  const j=(await readPairJob(f.c,id))!;assert.equal(j.phase,'succeeded');assert.equal(j.result.ok,true);assert.equal(j.errorCode,undefined);assert.ok(output.includes('AGENTWIRE_PAIR_REQUEST_ID='+id));
 });
+
+
+test('slow notification confirmation does not block later results or late arrivals; ownership lasts until settlement',async t=>{
+ const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);
+ const first=await stageNativeCommand(f,f.peers[1],'生成连接码');await enqueuePairJob(f.c,first,f.deps);
+ let release!:()=>void,entered!:()=>void;const gate=new Promise<void>(r=>release=r),started=new Promise<void>(r=>entered=r);const calls:string[]=[];
+ const running=api.runPairWorker(f.c,{...f.deps,notify:async(_c:any,id:string)=>{calls.push(id);},settle:async(_c:any,id:string)=>{if(id===first){entered();await gate;}}});
+ try{
+  await Promise.race([started,new Promise((_,reject)=>setTimeout(()=>reject(Error('settlement lane not started')),2500))]);assert.equal((await api.inspectPairWorker(f.c)).active,true);
+  const second=await stageNativeCommand(f,f.peers[0],'生成连接码');await enqueuePairJob(f.c,second,f.deps);
+  const end=Date.now()+5000;for(;;){const j=(await readPairJob(f.c,second))!;if(j.phase==='succeeded')break;if(['failed','needs_check','disabled'].includes(j.phase))assert.fail('later job failed: '+JSON.stringify(j));if(Date.now()>end)assert.fail('later result blocked by notification confirmation: '+JSON.stringify(j));await new Promise(r=>setTimeout(r,10));}
+  assert.equal((await api.inspectPairWorker(f.c)).active,true);assert.equal(calls.filter(id=>id===first).length,1);
+ }finally{release();await running;}
+ assert.equal((await api.inspectPairWorker(f.c)).active,false);assert.equal(calls.length,2);
+});
+
+
+test('notification failure preserves saved pairing result and does not repeat in the same worker',async t=>{
+ const f=await pairingFixture(t);await setAutomation(f.c,true,f.deps);const id=await stageNativeCommand(f,f.peers[1],'生成连接码');await enqueuePairJob(f.c,id,f.deps);let calls=0;
+ await api.runPairWorker(f.c,{...f.deps,notify:async()=>{calls++;throw Error('private_failure_details');}});
+ assert.equal(calls,1);assert.equal((await readPairJob(f.c,id))!.phase,'succeeded');assert.equal((await api.inspectPairWorker(f.c)).active,false);
+ const rows=(await readFile(path.join(f.c.installRoot,'pairing','latency.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
+ assert.ok(rows.some(r=>r.stage==='pair_result_committed'&&r.requestId===id&&r.durationsMs.executionMs>=0));assert.ok(rows.some(r=>r.stage==='pair_notification_settled'&&r.requestId===id&&r.state==='requires_check'));assert.ok(!JSON.stringify(rows).includes('private_failure_details'));
+});

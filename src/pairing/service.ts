@@ -35,7 +35,7 @@ export async function redeemCode(c:InstallContext,intentId:string,deps:PairDeps=
   const old=await active(c),different=old&&old.phase!=='disconnected'&&!samePair(old,pair);
   if(old?.phase==='needs_check'||old?.schemaVersion===2&&old.phase==='pairing')throw Error('pairing_activation_requires_check');
   if(tx.state.activations.some(a=>a.phase!=='paired'))throw Error('pairing_activation_requires_check');
-  await confirmTargets(c,pair,deps);const replacement=different?await inspectReplacement(c,old!,intent.source):undefined;
+  await confirmTargets(c,pair,deps);const replacement=different?await inspectReplacement(c,old!):undefined;
   const reuse=old&&old.phase!=='disconnected'&&!different?old:undefined;
   // Check orphan/foreign routes before consuming a code. Reuse retains the
   // exact old schema and admission rule instead of upgrading it to paired.

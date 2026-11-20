@@ -9,7 +9,11 @@ export async function safePath(root:string,file:string){
  let cursor=path.resolve(file);for(;;){try{if((await lstat(cursor)).isSymbolicLink())throw Error('symlink_not_allowed');}catch(e:any){if(e.code!=='ENOENT')throw e;}const parent=path.dirname(cursor);if(parent===cursor)break;cursor=parent;}
  return path.resolve(file);
 }
-export async function atomicBytes(file:string,bytes:Buffer|string){await mkdir(path.dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';const h=await open(tmp,'wx',0o600);try{await h.writeFile(bytes);await h.sync();}finally{await h.close();}try{await rename(tmp,file);}catch(e){await unlink(tmp).catch(()=>{});throw e;}}
+export async function atomicBytes(file:string,bytes:Buffer|string){await mkdir(path.dirname(file),{recursive:true});const tmp=file+'.'+randomUUID()+'.tmp';const h=await open(tmp,'wx',0o600);try{await h.writeFile(bytes);await h.sync();}finally{await h.close();}try{
+ // Windows may briefly deny replacement while another handle is closing.
+ // Retry only this exact atomic rename; never unlink the destination or rerun callers.
+ for(let attempt=0;;attempt++){try{await rename(tmp,file);break;}catch(e:any){if(process.platform!=='win32'||!['EPERM','EACCES'].includes(e.code)||attempt>=3)throw e;await new Promise(resolve=>setTimeout(resolve,10*2**attempt));}}
+ }catch(e){await unlink(tmp).catch(()=>{});throw e;}}
 export const jsonBytes=(v:unknown)=>Buffer.from(JSON.stringify(v,null,2)+'\n');
 export function resolveLayout(c:InstallContext){const root=path.resolve(c.installRoot);return {root,runtime:path.join(root,'runtime'),bin:path.join(root,'bin'),install:path.join(root,'install'),connections:path.join(root,'connections'),routes:path.join(root,'routes.json'),logs:path.join(root,'logs')};}
 export async function assertNoConnectionSwitch(c:InstallContext){if(await optional(await safePath(c.installRoot,path.join(c.installRoot,'connection-transition.json'))))throw Error('connection_switch_requires_check');}

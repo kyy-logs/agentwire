@@ -54,6 +54,8 @@ powershell -NoProfile -File .\install.ps1
 
 该分支包含后续的生命周期和断开恢复修复，完整离线测试 324/324。同一对原窗口的历史恢复及恢复后正向往返已验证，其他范围见[真实窗口验收](docs/LOCAL-CONNECTIONS-P0-LIVE-ACCEPTANCE.md)与[修复记录](docs/LOCAL-CONNECTIONS-P0-REPAIR.md)。源码试用时将上面 clone 命令的分支名改为 `codex/local-connections-p0`。
 
+
+2026-11-20 的本分支还包含统一内置 Agent 接入层、任务等待原因、配对通知展示与 Hook 启动改进。实现范围及原窗口回归见[Agent 接入层](docs/AGENT-INTEGRATIONS.md)、[状态说明](docs/STATUS-MESSAGES.md)和[延迟诊断](docs/LATENCY.md)。这些变更尚未加入上方 v0.1.1 Release 安装包；试用请克隆 `codex/local-connections-p0` 分支。
 ## 开始协作
 
 1. 打开想连接的两个聊天。
@@ -90,6 +92,8 @@ Skill 负责发起明确任务；Bus 负责路由、持久化、有限重试与�
 
 ## 状态与撤销
 
+开发版的状态说明、操作与通知结果区别见[状态说明](docs/STATUS-MESSAGES.md)。
+
 ```text
 labus status
 labus doctor
@@ -116,6 +120,7 @@ npm test
 - [日常使用](docs/USAGE.md)
 - [架构与可靠性](docs/IMPLEMENTATION-NOTES.md)
 - [Hook 与自动回传](docs/HOOKS.md)
+- [本机消息延迟与分段诊断](docs/LATENCY.md)
 - [干净消息与原生身份](docs/clean-messages.md)
 - [开发协作边界](docs/DEVELOPMENT-WORKFLOW.md)
 - [版本记录](CHANGELOG.md)

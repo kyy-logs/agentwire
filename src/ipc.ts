@@ -38,12 +38,12 @@ export async function startIpc(root:string,handle:(r:BusRequest)=>Promise<BusRes
   try{await writeFile(path.join(root,'auth.token'),token+'\n',{mode:0o600});ready=true;}catch(e){server.close();throw e;}
   return {async close(){ready=false;for(const s of sockets)s.destroy();await new Promise<void>((resolve,reject)=>server.close(e=>e?reject(e):resolve()));}};
 }
-export async function requestBus(root:string,request:BusRequest):Promise<BusResponse>{
+export async function requestBus(root:string,request:BusRequest,options:{timeoutMs?:number}={}):Promise<BusResponse>{
   const token=(await readFile(path.join(root,'auth.token'),'utf8')).trim(),pipe=await pipeFor(root);
   return new Promise((resolve,reject)=>{
     const s=net.createConnection(pipe);let buffer='';s.setEncoding('utf8');
     const fail=(e:Error)=>{s.destroy();reject(e);};
-    s.setTimeout(5000,()=>fail(new Error('ipc_timeout')));s.on('error',fail);
+    s.setTimeout(options.timeoutMs??5000,()=>fail(new Error('ipc_timeout')));s.on('error',fail);
     s.on('connect',()=>s.write(JSON.stringify({...request,token})+'\n'));
     s.on('end',()=>{if(!s.destroyed)fail(new Error('ipc_closed_without_ack'));});
     s.on('data',part=>{buffer+=part;if(Buffer.byteLength(buffer)>MAX){fail(new Error('response_too_large'));return;}const end=buffer.indexOf('\n');if(end<0)return;

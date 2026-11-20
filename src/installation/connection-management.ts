@@ -1,4 +1,6 @@
 import path from 'node:path';
+import net from 'node:net';
+import {pipeFor} from '../ipc.ts';
 import {readdir,readFile,unlink} from 'node:fs/promises';
 import {randomUUID} from 'node:crypto';
 import {assertId,realClock} from '../model.ts';
@@ -76,22 +78,23 @@ export async function inspectConnectionWork(c:InstallContext,id:string){
  for(const e of await names(c,path.join(root,'lifecycle','results'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');await safePath(c.installRoot,path.join(root,'lifecycle','results',e.name));const result=await life.getResult(e.name.slice(0,-5));if(!result||!records.has(result.messageId))throw Error('connection_storage_requires_check');}
  return work;
 }
-export async function listConnections(c:InstallContext,source:SourceRef,deps:PairDeps={}){
+export async function listConnections(c:InstallContext,source:SourceRef,deps:PairDeps&{includeArchived?:boolean}={}){
  if(!['codex','claude'].includes(source.provider))throw Error('source_provider_invalid');assertId(source.sessionId);
  let current:ConnectionRecord|undefined;const errors:{connectionId?:string;code:string}[]=[];
  try{current=await activeConnection(c,true);}catch(e:any){if(e.message!=='not_connected')errors.push({code:e.message});}
- const connections:any[]=[];
+ const connections:any[]=[];let archivedCount=0;
  for(const e of await names(c,path.join(c.installRoot,'connections'))){
   if(!isId(e.name))continue;
   try{
    const r=await readConnection(c,e.name);if(r[source.provider].sessionId!==source.sessionId)continue;
-   const view:any={...r,active:current?.phase!=='disconnected'&&current?.connectionId===r.connectionId,endpoint:await pairEndpoints(c,r as PairedConnectionRecord,deps)};
+   const archive=await readConnectionArchive(c,r);if(archive){archivedCount++;if(!deps.includeArchived)continue;}
+   const view:any={...r,...(archive?{archive}:{}),active:current?.phase!=='disconnected'&&current?.connectionId===r.connectionId,endpoint:await pairEndpoints(c,r as PairedConnectionRecord,deps)};
    try{view.work=await inspectConnectionWork(c,r.connectionId);}catch{view.errorCode='connection_storage_requires_check';}
    connections.push(view);
   }catch{errors.push({connectionId:e.name,code:'invalid_connection'});}
  }
  connections.sort((a,b)=>Number(b.active)-Number(a.active)||a.createdAt.localeCompare(b.createdAt)||a.connectionId.localeCompare(b.connectionId));
- return {current:current?.phase==='disconnected'?undefined:current,lastSelected:current?.phase==='disconnected'?current:undefined,connections,errors};
+ return {current:current?.phase==='disconnected'?undefined:current,lastSelected:current?.phase==='disconnected'?current:undefined,connections,archivedCount,errors};
 }
 
 type SwitchDeps=PairDeps&{shutdown?:typeof shutdownService;afterSwitchStep?:(step:'guard_written'|'services_stopped'|'routes_written'|'active_written')=>Promise<void>};
@@ -133,6 +136,7 @@ async function snapshot(c:InstallContext,from:ConnectionRecord|undefined,to:Conn
 async function current(c:InstallContext){try{return await activeConnection(c);}catch(e:any){if(e.message!=='not_connected')throw e;}}
 async function validateSwitch(c:InstallContext,source:SourceRef,from:ConnectionRecord|undefined,to:ConnectionRecord,deps:SwitchDeps){
  verifyCaller(to,source);if(from&&from.phase!=='disconnected')verifyCaller(from,source);
+ if(await readConnectionArchive(c,to))throw Error('connection_history_archived');
  if(to.schemaVersion!==2)throw Error('legacy_connection_requires_reconnect');
  if(to.phase!=='disconnected'||to.errorCode)throw Error('connection_not_ready');
  if(from&&from.phase!=='disconnected'&&(!['paired','ready'].includes(from.phase)||from.errorCode))throw Error('connection_not_ready');
@@ -181,4 +185,31 @@ export async function applyConnectionSwitch(c:InstallContext,source:SourceRef,id
   const restored={...to,phase:'paired' as const} as PairedConnectionRecord;await atomicBytes(recordFile(c,id),jsonBytes(restored));await atomicBytes(path.join(c.installRoot,'active-connection.json'),jsonBytes({connectionId:id}));await deps.afterSwitchStep?.('active_written');
   await atomicBytes(planFile(c,operationId),jsonBytes({...plan,status:'applied'}));await unlink(guard);return restored;
  },deps);
+}
+
+
+/** Explicit local disposition only: original records remain unverified and immutable.
+ * This receipt hides disconnected history; it never dismisses active work. */
+export async function readConnectionArchive(c:InstallContext,r:ConnectionRecord){
+ const file=await safePath(c.installRoot,path.join(path.dirname(connectionState(c,r.connectionId)),'archive.json')),raw=await optional(file);if(!raw)return;
+ if(raw.length>4096)throw Error('connection_archive_invalid');const a=JSON.parse(raw.toString());
+ if(a.schemaVersion!==1||a.connectionId!==r.connectionId||a.disposition!=='tracking_retired_unverified'||r.phase!=='disconnected'||typeof a.archivedAt!=='string'||!Number.isFinite(Date.parse(a.archivedAt))||a.connectionSha256!==hash(await readFile(recordFile(c,r.connectionId))))throw Error('connection_archive_invalid');return a;
+}
+export async function archiveConnectionHistory(c:InstallContext,id:string,expectedSha256:string,deps:Pick<PairDeps,'now'>={}){
+ assertId(id);if(!/^[a-f0-9]{64}$/.test(expectedSha256))throw Error('connection_archive_changed');const release=await acquireLock(path.join(c.installRoot,'connection.lock'));
+ try{
+  await assertNoConnectionSwitch(c);const r=await readConnection(c,id),selected=await current(c);
+  if(selected?.connectionId===id||r.phase!=='disconnected')throw Error('active_connection_cannot_archive');
+  if(hash(await readFile(recordFile(c,id)))!==expectedSha256)throw Error('connection_archive_changed');
+  const prior=await readConnectionArchive(c,r);if(prior)return prior;
+  const routes=await optional(await safePath(c.installRoot,path.join(c.installRoot,'routes.json')));if(routes){const v=JSON.parse(routes.toString());if(v.schemaVersion!==1||!Array.isArray(v.routes)||v.routes.some((x:any)=>x.connectionId===id))throw Error('connection_routes_require_check');}
+  const marker=await optional(await safePath(c.installRoot,path.join(c.installRoot,'install/runtime-active.json')));if(marker){const v=JSON.parse(marker.toString());if(v.stateRoot===path.resolve(connectionState(c,id))&&!deadPid(v.pid))throw Error('connection_native_work_outstanding');}
+  // A transport-only probe also covers old/orphan services without diagnostic metadata.
+  // Send no frame: older daemons must not receive an unknown operation or log a task.
+  const pipe=await pipeFor(await safePath(c.installRoot,connectionState(c,id)));
+  await new Promise<void>((resolve,reject)=>{const socket=net.createConnection(pipe);const fail=(code:string)=>{socket.destroy();reject(Error(code));};socket.once('connect',()=>fail('connection_native_work_outstanding'));socket.once('error',(e:any)=>{socket.destroy();if(['ENOENT','ECONNREFUSED'].includes(e.code))resolve();else reject(Error('service_shutdown_unconfirmed'));});socket.setTimeout(1000,()=>fail('service_shutdown_unconfirmed'));});
+  const work=await inspectConnectionWork(c,id);if(work.unfinished||work.uncertain)throw Error('connection_has_unfinished_tasks');
+  const receipt={schemaVersion:1,connectionId:id,archivedAt:(deps.now?.()||new Date()).toISOString(),disposition:'tracking_retired_unverified',connectionSha256:expectedSha256,workAtArchive:work};
+  await atomicBytes(await safePath(c.installRoot,path.join(path.dirname(connectionState(c,id)),'archive.json')),jsonBytes(receipt));return receipt;
+ }finally{await release();}
 }

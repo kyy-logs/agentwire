@@ -1,3 +1,4 @@
+import {recordTiming} from '../latency.ts';
 import path from 'node:path';import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {optional,atomicBytes,jsonBytes,acquireLock,deadPid,withInstallLock} from '../installation/paths.ts';
@@ -10,7 +11,7 @@ import {readPairState} from './store.ts';
 import {executePairRequest} from './executor.ts';
 import type {InstallContext} from '../installation/model.ts';import type {PairDeps} from './model.ts';
 
-type WorkerDeps=PairDeps&{sleep?:(ms:number)=>Promise<void>;notify?:(c:InstallContext,id:string)=>Promise<void>;launch?:(args:string[])=>Promise<{pid:number}>;afterIdle?:()=>Promise<void>};
+type WorkerDeps=PairDeps&{sleep?:(ms:number)=>Promise<void>;notify?:(c:InstallContext,id:string)=>Promise<void>;settle?:(c:InstallContext,id:string)=>Promise<void>;launch?:(args:string[])=>Promise<{pid:number}>;afterIdle?:()=>Promise<void>};
 const pause=(ms:number)=>new Promise<void>(r=>setTimeout(r,ms));
 async function startLock(c:InstallContext){const file=await automationPath(c,'worker-start.lock');for(let n=0;;n++){try{return await acquireLock(file);}catch(e:any){if(e.message!=='installation_busy'||n>=40)throw e;await pause(25);}}}
 export async function inspectPairWorker(c:InstallContext){
@@ -44,6 +45,17 @@ export async function schedulePairWorker(c:InstallContext,deps:WorkerDeps={}){
 export async function runPairWorker(c:InstallContext,deps:WorkerDeps={}){
  const workFile=await automationPath(c,'worker.lock');let releaseWork;
  for(let n=0;;n++){try{releaseWork=await acquireLock(workFile);break;}catch(e:any){if(e.message!=='installation_busy'||n>=40)throw e;await pause(25);}}
+ const notifications=new Map<string,Promise<void>>(),notified=new Set<string>();
+ // Serialize the initial notification write outside pairing operations. Only
+ // inspect-only settlement may overlap the next operation's automation lock.
+ const notify=async(j:PairJob)=>{
+  if(!deps.notify||!j.result||j.notification.phase!=='pending'||notified.has(j.requestId)||notifications.size>=8)return;
+  notified.add(j.requestId);const started=performance.now();let state='settled';
+  const failed=()=>{state='requires_check';process.stderr.write('pair_notification_requires_check\n');};
+  try{await deps.notify(c,j.requestId);}catch{failed();}
+  const pending=Promise.resolve().then(async()=>{if(deps.settle)await deps.settle(c,j.requestId);}).catch(failed).then(()=>recordTiming(path.join(c.installRoot,'pairing'),{stage:'pair_notification_settled',requestId:j.requestId,state,durationsMs:{notificationMs:performance.now()-started}})).finally(()=>notifications.delete(j.requestId));
+  notifications.set(j.requestId,pending);
+ };
  const mark=async(phase:string)=>atomicBytes(await automationPath(c,'worker.json'),jsonBytes({schemaVersion:1,pid:process.pid,phase}));
  try{
   const releaseStart=await startLock(c);try{await mark('accepting');}finally{await releaseStart();}
@@ -52,12 +64,13 @@ export async function runPairWorker(c:InstallContext,deps:WorkerDeps={}){
    let waiting=false;const jobs=await listPairJobs(c);
    for(const original of jobs){
     let j=(await readPairJob(c,original.requestId))!;
-    if(terminalJob(j)){if(j.result&&j.notification.phase==='pending'&&deps.notify)await deps.notify(c,j.requestId);continue;}
+    if(terminalJob(j)){await notify(j);continue;}
     if(!await jobAuthorized(c,j)){await updatePairJob(c,{...j,phase:'disabled',errorCode:'pairing_automation_disabled'});continue;}
     const now=+(deps.now?.()||new Date());
     // Already-started activation recovery is handled by the same executor before
     // expiry rejection; unverified/never-started jobs do not acquire new rights.
     if(now>=Date.parse(j.expiresAt)&&j.phase==='waiting_native'){await updatePairJob(c,{...j,phase:'failed',errorCode:'pairing_intent_expired',result:{ok:false,errorCode:'pairing_intent_expired'}});continue;}
+    const executionStarted=performance.now();
     const result=await automationLock(c,async()=>{
      j=(await readPairJob(c,j.requestId))!;if(terminalJob(j))return j.result||{ok:false,errorCode:j.errorCode};
      if(!await jobAuthorized(c,j))return {ok:false,errorCode:'pairing_automation_disabled'};
@@ -66,13 +79,17 @@ export async function runPairWorker(c:InstallContext,deps:WorkerDeps={}){
     if(!result.ok&&result.errorCode==='pairing_identity_unconfirmed'&&now<Date.parse(j.expiresAt)){waiting=true;continue;}
     const phase=result.ok?'succeeded':result.errorCode==='pairing_automation_disabled'?'disabled':result.errorCode==='pairing_identity_unconfirmed'||result.errorCode==='pairing_intent_expired'?'failed':'needs_check';
     j=await updatePairJob(c,{...j,phase,result,...(result.intentId?{intentId:result.intentId}:{}),...(!result.ok?{errorCode:result.errorCode}:{})});
-    if(deps.notify)await deps.notify(c,j.requestId);
+    await recordTiming(path.join(c.installRoot,'pairing'),{stage:'pair_result_committed',requestId:j.requestId,state:j.phase,durationsMs:{executionMs:performance.now()-executionStarted}});
+    await notify(j);
+
    }
+   if(notifications.size){await Promise.race([Promise.all(notifications.values()),pause(100)]);continue;}
    if(waiting){await(deps.sleep||pause)(delay);delay=Math.min(delay*2,1000);continue;}
    await deps.afterIdle?.();const releaseStart=await startLock(c);
-   try{const remaining=await listPairJobs(c);if(remaining.some(j=>!terminalJob(j)))continue;await mark('closed');return;}finally{await releaseStart();}
+   try{const remaining=await listPairJobs(c);if(remaining.some(j=>!terminalJob(j)||!!deps.notify&&!!j.result&&j.notification.phase==='pending'&&!notified.has(j.requestId)))continue;await mark('closed');return;}finally{await releaseStart();}
   }
  }finally{
+  await Promise.all(notifications.values());
   const releaseStart=await startLock(c);try{const m=await inspectPairWorker(c);if(m.pid===process.pid)await mark('closed');}finally{await releaseStart();await releaseWork!();}
  }
 }
@@ -87,5 +104,5 @@ export async function recoverPairJob(c:InstallContext,id:string,deps:PairDeps={}
  }));
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
- try{if(process.argv.length!==4||process.argv[2]!=='--root'||!path.isAbsolute(process.argv[3]))throw Error('invalid_arguments');const c={installRoot:process.argv[3],home:os.homedir(),sourceRoot:path.join(process.argv[3],'runtime'),nodeExe:process.execPath};let notificationDeadline:number|undefined;await runPairWorker(c,{notify:async(c,id)=>{try{await notifyPairJob(c,id);notificationDeadline??=Date.now()+60000;await settlePairNotification(c,id,{maxWaitMs:Math.max(0,notificationDeadline-Date.now())});}catch{process.stderr.write('pair_notification_requires_check\n');}}});}catch(e:any){process.stderr.write('pair_worker_error '+(/^[a-z_]+$/.test(e.message||'')?e.message:'requires_check')+'\n');process.exitCode=1;}
+ try{if(process.argv.length!==4||process.argv[2]!=='--root'||!path.isAbsolute(process.argv[3]))throw Error('invalid_arguments');const c={installRoot:process.argv[3],home:os.homedir(),sourceRoot:path.join(process.argv[3],'runtime'),nodeExe:process.execPath};let notificationDeadline:number|undefined;await runPairWorker(c,{notify:async(c,id)=>{await notifyPairJob(c,id);},settle:async(c,id)=>{notificationDeadline??=Date.now()+60000;await settlePairNotification(c,id,{maxWaitMs:Math.max(0,notificationDeadline-Date.now())});}});}catch(e:any){process.stderr.write('pair_worker_error '+(/^[a-z_]+$/.test(e.message||'')?e.message:'requires_check')+'\n');process.exitCode=1;}
 }

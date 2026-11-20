@@ -1,3 +1,4 @@
+import type {Timing} from './latency.ts';
 import type {NativeDispatcher} from './native/dispatcher.ts';
 import type {DispatchIntent} from './native/model.ts';
 import {isDeepStrictEqual} from 'node:util';
@@ -7,13 +8,15 @@ import {defaultPolicy,realClock,assertId,assertAgent,validateMessage} from './mo
 import type {AgentAdapter,AgentBinding,AgentMessage,MessageInput,MessageRecord,MessageStore,Clock,SubmitResult} from './model.ts';
 import {validateResult,clipUtf8,digest,resultHeading} from './lifecycle/model.ts';
 import type {CapturedResult} from './lifecycle/model.ts';
-type Options={store:MessageStore;adapters:AgentAdapter[];bindings:AgentBinding[];clock?:Clock;policy?:typeof defaultPolicy;saveBindings?:(b:AgentBinding[])=>Promise<void>;newAutoWireVersion?:'legacy'|'clean-v1';nativeDispatcher?:NativeDispatcher;connectionId?:string};
+type Options={onTiming?:(event:Timing)=>Promise<void>;store:MessageStore;adapters:AgentAdapter[];bindings:AgentBinding[];clock?:Clock;policy?:typeof defaultPolicy;saveBindings?:(b:AgentBinding[])=>Promise<void>;newAutoWireVersion?:'legacy'|'clean-v1';nativeDispatcher?:NativeDispatcher;connectionId?:string};
 const terminal=new Set(['completed','delivered','failed','expired','stopped']);
 const expiredReplyCheck=(r:MessageRecord)=>r.state==='expired'&&r.message.schemaVersion===2&&r.message.kind==='reply'&&r.attempts>0&&!!r.activeAttemptId;
 export class LocalBus {
   store:MessageStore;adapters:Map<string,AgentAdapter>;bindings:Map<string,AgentBinding>;clock:Clock;policy:typeof defaultPolicy;chain:Promise<unknown>=Promise.resolve();saveBindings?:Options['saveBindings'];
+  onTiming?:Options['onTiming'];
+  async timing(event:Timing){try{await this.onTiming?.(event);}catch{}}
   nativeDispatcher?:NativeDispatcher;connectionId?:string;dispatchStopped=false;newAutoWireVersion:'legacy'|'clean-v1';
-  constructor(o:Options){this.nativeDispatcher=o.nativeDispatcher;this.connectionId=o.connectionId;this.newAutoWireVersion=o.newAutoWireVersion||'legacy';this.store=o.store;this.adapters=new Map(o.adapters.map(a=>[a.kind,a]));this.bindings=new Map(o.bindings.map(b=>[b.agentId,{...b}]));this.clock=o.clock||realClock;this.policy=o.policy||defaultPolicy;this.saveBindings=o.saveBindings;}
+  constructor(o:Options){this.onTiming=o.onTiming;this.nativeDispatcher=o.nativeDispatcher;this.connectionId=o.connectionId;this.newAutoWireVersion=o.newAutoWireVersion||'legacy';this.store=o.store;this.adapters=new Map(o.adapters.map(a=>[a.kind,a]));this.bindings=new Map(o.bindings.map(b=>[b.agentId,{...b}]));this.clock=o.clock||realClock;this.policy=o.policy||defaultPolicy;this.saveBindings=o.saveBindings;}
   serial<T>(fn:()=>Promise<T>):Promise<T>{const p=this.chain.then(fn);this.chain=p.catch(()=>{});return p;}
   now(){return this.clock.now().toISOString();}
   requestShutdown(){this.dispatchStopped=true;}
@@ -80,7 +83,7 @@ export class LocalBus {
   async status(taskId?:string){return this.serial(async()=>{if(taskId)assertId(taskId);return (await this.store.list()).filter(r=>!taskId||r.message.taskId===taskId);});}
   applyCapturedResult(result:CapturedResult){return this.serial(()=>this.applyCapturedResultOne(result));}
   async applyCapturedResultOne(result:CapturedResult):Promise<MessageRecord|undefined>{
-    validateResult(result);const parent=await this.store.get(result.messageId);if(!parent)throw new Error('captured_parent_missing');
+    const captureStarted=performance.now();validateResult(result);const parent=await this.store.get(result.messageId);if(!parent)throw new Error('captured_parent_missing');
     const binding=this.binding(parent.message.to);
     if(parent.returnMode!=='auto'||parent.message.kind==='reply'||parent.message.targetSessionId!==result.ref.sessionId||binding.kind!==result.ref.provider||parent.attempts<1)throw new Error('captured_parent_mismatch');
     const family=(await this.store.list()).filter(r=>r.message.taskId===parent.message.taskId),root=family.find(r=>r.message.messageId===parent.message.taskId);
@@ -96,7 +99,7 @@ export class LocalBus {
     const reply=await this.acceptOne({messageId:id,kind:'reply',from:parent.message.to,replyTo:result.messageId,body});
     const latest=(await this.store.get(result.messageId))!;
     latest.completion={nativeOutcome:result.nativeOutcome,businessVerdict:'unverified',eventKey:result.terminalEventKey,artifactRef:result.artifactRef,sha256:result.sha256,truncated:result.truncated};
-    await this.update(latest);return reply;
+    await this.update(latest);if(!old)await this.timing({stage:'automatic_result_committed',messageId:result.messageId,taskId:parent.message.taskId,state:latest.state,durationsMs:{captureMs:performance.now()-captureStarted}});return reply;
   }
   async tick(){return this.serial(async()=>{
     let all=await this.store.list();
@@ -129,6 +132,7 @@ export class LocalBus {
       if(this.dispatchStopped||Date.parse(r.message.expiresAt)<=+this.clock.now()){
         r.attempts--;r.state=this.dispatchStopped?'pending':'expired';r.lastError=this.dispatchStopped?'shutdown_before_submit':'root_deadline_no_native_cancel';await this.update(r);if(this.dispatchStopped)break;continue;
       }
+      const submissionStarted=performance.now(),queueAgeMs=+this.clock.now()-Date.parse(r.message.createdAt);
       let receipt:SubmitResult;
       if(r.message.schemaVersion===2){const intent:DispatchIntent={schemaVersion:1,connectionId:this.connectionId!,provider:binding.kind,targetSessionId:r.message.targetSessionId,sourceSessionId:r.message.sourceSessionId,messageId:r.message.messageId,attemptId:r.activeAttemptId!,transportId:randomUUID(),wireVersion:'clean-v1',bodySha256:digest(r.message.body),createdAt:this.now(),updatedAt:this.now(),phase:'prepared'};
         receipt=await this.nativeDispatcher!.submit(intent,transportId=>adapter.submit(binding,r.message,{wireVersion:'clean-v1',transportId,returnMode:r.returnMode,dispatchNonce:r.dispatchNonce}),()=>!this.dispatchStopped&&Date.parse(r.message.expiresAt)>+this.clock.now());
@@ -140,7 +144,7 @@ export class LocalBus {
       }else if(receipt.status==='unknown'){r.state='needs_check';}
       else if(receipt.retryable&&r.attempts<this.policy.maxAttempts){r.state='pending';r.nextAttemptAt=new Date(+this.clock.now()+this.policy.retryDelaysMs[r.attempts-1]).toISOString();}
       else r.state='failed';
-      await this.update(r);
+      await this.update(r);await this.timing({stage:'submission_settled',messageId:r.message.messageId,taskId:r.message.taskId,state:r.state,durationsMs:{queueAgeMs,submissionMs:performance.now()-submissionStarted}});
     }
     // Reminders are transport notices, not new delegation records or executions.
     // Commit the attempt before transport: a crash/unknown result never replays it.
@@ -166,13 +170,13 @@ export class LocalBus {
   async reconcileRecord(r:MessageRecord,allowExpiredReply=false){
     const binding=this.binding(r.message.to);if(binding.sessionId!==r.message.targetSessionId)return r;
     const adapter=this.adapters.get(binding.kind);if(!adapter)return r;
-    if(r.message.schemaVersion===2){const lateDelivery=allowExpiredReply&&expiredReplyCheck(r);if(r.message.kind!=='reply'&&r.state==='needs_check'&&['background_pending','stop_continuation_unverified','captured_output_incomplete','missing_terminal_flags','multiple_terminal_events','native_result_identity_mismatch','native_result_incomplete','result_timeout_no_native_cancel'].includes(r.lastError||''))return r;if(!this.nativeDispatcher||!r.activeAttemptId)return r;const i=await this.nativeDispatcher.store.get(r.activeAttemptId);if(!i){r.state='needs_check';r.lastError='native_intent_missing';await this.update(r);return r;}const e=await this.nativeDispatcher.reconcile(i);if(e.status==='limit'){r.state='needs_check';r.lastError=e.errorCode||'native_read_limit';await this.update(r);return r;}if(e.status==='conflict'){r.state='needs_check';r.lastError=e.errorCode||'native_binding_conflict';await this.update(r);return r;}if((e.status==='mapped'||e.status==='delivered')&&(['needs_check','submitted'].includes(r.state)||lateDelivery)){const evidenceRef=e.status==='mapped'?e.identity.evidenceRef:e.evidenceRef;r.state=r.message.kind==='reply'?'delivered':'submitted';if(lateDelivery)r.late=true;r.receipt={status:'accepted',evidenceRef};r.submittedAt??=this.now();r.resultDeadlineAt??=new Date(Math.min(Date.parse(r.submittedAt)+this.policy.resultTimeoutMs,Date.parse(r.message.expiresAt))).toISOString();delete r.lastError;delete r.nextAttemptAt;await this.update(r);}return r;}
+    if(r.message.schemaVersion===2){const lateDelivery=allowExpiredReply&&expiredReplyCheck(r);if(r.message.kind!=='reply'&&r.state==='needs_check'&&['background_pending','stop_continuation_unverified','captured_output_incomplete','missing_terminal_flags','multiple_terminal_events','native_result_identity_mismatch','native_result_incomplete','result_timeout_no_native_cancel'].includes(r.lastError||''))return r;if(!this.nativeDispatcher||!r.activeAttemptId)return r;const i=await this.nativeDispatcher.store.get(r.activeAttemptId);if(!i){r.state='needs_check';r.lastError='native_intent_missing';await this.update(r);return r;}const e=await this.nativeDispatcher.reconcile(i);if(e.status==='limit'){r.state='needs_check';r.lastError=e.errorCode||'native_read_limit';await this.update(r);return r;}if(e.status==='conflict'){r.state='needs_check';r.lastError=e.errorCode||'native_binding_conflict';await this.update(r);return r;}if((e.status==='mapped'||e.status==='delivered')&&(['needs_check','submitted'].includes(r.state)||lateDelivery)){const evidenceRef=e.status==='mapped'?e.identity.evidenceRef:e.evidenceRef;r.state=r.message.kind==='reply'?'delivered':'submitted';if(lateDelivery)r.late=true;r.receipt={status:'accepted',evidenceRef};r.submittedAt??=this.now();r.resultDeadlineAt??=new Date(Math.min(Date.parse(r.submittedAt)+this.policy.resultTimeoutMs,Date.parse(r.message.expiresAt))).toISOString();delete r.lastError;delete r.nextAttemptAt;await this.update(r);if(r.state==='delivered')await this.timing({stage:'delivery_confirmed',messageId:r.message.messageId,taskId:r.message.taskId,state:r.state,durationsMs:{deliveryAgeMs:+this.clock.now()-Date.parse(r.message.createdAt)}});}return r;}
     let result;try{result=await adapter.reconcile(binding,r);}catch{return r;}
     // An observed inbound confirms submission, never task completion. Only explicit reply completes work.
     if(result.status==='submitted'&&['needs_check','submitted'].includes(r.state)){
       r.state=r.message.kind==='reply'?'delivered':'submitted';r.submittedAt??=this.now();r.resultDeadlineAt??=new Date(Math.min(Date.parse(r.submittedAt)+this.policy.resultTimeoutMs,Date.parse(r.message.expiresAt))).toISOString();
       r.receipt={status:'accepted',evidenceRef:result.evidenceRef,nativeId:result.nativeId||r.receipt?.nativeId};
-      if(r.message.kind==='reply'){delete r.lastError;delete r.nextAttemptAt;}await this.update(r);
+      if(r.message.kind==='reply'){delete r.lastError;delete r.nextAttemptAt;}await this.update(r);if(r.state==='delivered')await this.timing({stage:'delivery_confirmed',messageId:r.message.messageId,taskId:r.message.taskId,state:r.state,durationsMs:{deliveryAgeMs:+this.clock.now()-Date.parse(r.message.createdAt)}});
     }
     return r;
   }

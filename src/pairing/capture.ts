@@ -1,4 +1,5 @@
 import path from 'node:path';
+import {findAgent,getAgent} from '../agents/registry.ts';
 import {open} from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {assertId} from '../model.ts';
@@ -20,25 +21,19 @@ function nativePath(file:string){return /^\\\\\?\\[A-Za-z]:\\/.test(file)?file.s
 /** Syntax/shape only. This does not prove human origin or read native records. */
 export function normalizePairEvent(provider:Provider,event:unknown):PairEvent|undefined{
  try{
- if(!['codex','claude'].includes(provider))return;let e:any=event;
+ const agent=findAgent(provider);if(!agent)return;let e:any=event;
  if(event instanceof Uint8Array){if(event.byteLength>HOOK_LIMIT)return;e=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(event));}
  if(!e||typeof e!=='object'||e.hook_event_name!=='UserPromptSubmit'||typeof e.prompt!=='string'||Buffer.byteLength(JSON.stringify(e))>HOOK_LIMIT||!parsePairCommand(e.prompt))return;
- const inputId=provider==='codex'?e.turn_id:e.prompt_id;assertId(e.session_id);assertId(inputId);
+ const inputId=e[agent.executionIdField];assertId(e.session_id);assertId(inputId);
  if(e.is_sidechain===true||e.agent_id||e.agent_type||typeof e.cwd!=='string'||!path.isAbsolute(e.cwd)||typeof e.transcript_path!=='string')return;
  const file=nativePath(e.transcript_path);if(!path.isAbsolute(file)||!file.endsWith('.jsonl'))return;
- if(provider==='claude'&&path.basename(file)!==e.session_id+'.jsonl')return;
- return {hook_event_name:'UserPromptSubmit',session_id:e.session_id,...(provider==='codex'?{turn_id:inputId}:{prompt_id:inputId}),prompt:e.prompt,cwd:e.cwd,transcript_path:file};
+ if(agent.sessionNamedTranscript&&path.basename(file)!==e.session_id+'.jsonl')return;
+ return {hook_event_name:'UserPromptSubmit',session_id:e.session_id,[agent.executionIdField]:inputId,prompt:e.prompt,cwd:e.cwd,transcript_path:file};
  }catch{return undefined;}
 }
 export async function readPairEvent(c:InstallContext,provider:Provider,event:unknown):Promise<PairEvent|undefined>{
  const e=normalizePairEvent(provider,event);if(!e)return;
- try{await safePath(path.join(c.home,provider==='codex'?'.codex':'.claude',provider==='codex'?'sessions':'projects'),e.transcript_path);return e;}catch{return undefined;}
-}
-function samePath(a:unknown,b:string){return typeof a==='string'&&path.isAbsolute(a)&&path.relative(path.resolve(nativePath(a)),path.resolve(nativePath(b)))==='';}
-function plainText(r:any):string|undefined{
- const value=r.message?.content;
- if(typeof value==='string')return value;
- if(Array.isArray(value)&&value.length>0&&value.every(b=>b?.type==='text'&&typeof b.text==='string'))return value.map(b=>b.text).join('');
+ try{await safePath(path.join(c.home,getAgent(provider).transcriptDirectory),e.transcript_path);return e;}catch{return undefined;}
 }
 function lines(bytes:Buffer,skipPartial=false):any[]{
  if(skipPartial){const end=bytes.indexOf(10);if(end<0)throw Error('native_window_exhausted');bytes=bytes.subarray(end+1);}
@@ -60,43 +55,6 @@ async function snapshot(file:string):Promise<any[]>{
  return rows;
  }finally{await handle.close();}
 }
-type Proof={timestamp:string;cwd:string};
-function nativeSkillCompanion(rows:any[],r:any,e:any):boolean{
- // Claude persists Skill contents as a user-shaped text companion. Exclude it
- // only with native flags AND the exact parent result -> Skill call lineage;
- // neither its text nor a missing human origin alone is evidence of metadata.
- if(r.isMeta!==true||r.turnCompanion!==true||r.isSidechain!==false||r.origin!==undefined||r.agentId!==undefined||typeof r.sourceToolUseID!=='string'||!r.sourceToolUseID||typeof r.parentUuid!=='string')return false;
- const parents=rows.filter(p=>p.uuid===r.parentUuid);if(parents.length!==1)return false;const p=parents[0];
- if(p.type!=='user'||p.sessionId!==e.session_id||p.promptId!==e.prompt_id||p.isSidechain!==false||p.agentId!==undefined||typeof p.sourceToolAssistantUUID!=='string'||!Array.isArray(p.message?.content)||!p.message.content.some((b:any)=>b?.type==='tool_result'&&b.tool_use_id===r.sourceToolUseID))return false;
- const calls=rows.filter(a=>a.uuid===p.sourceToolAssistantUUID);if(calls.length!==1)return false;const a=calls[0];
- return a.type==='assistant'&&a.sessionId===e.session_id&&a.isSidechain===false&&a.agentId===undefined&&Array.isArray(a.message?.content)&&a.message.content.filter((b:any)=>b?.type==='tool_use'&&b.id===r.sourceToolUseID&&b.name==='Skill').length===1;
-}
-function proveClaude(rows:any[],e:any):Proof|undefined{
- // Tool continuations and proven native Skill companions share promptId.
- const roots=rows.filter(r=>r?.type==='user'&&r.sessionId===e.session_id&&r.promptId===e.prompt_id&&plainText(r)!==undefined&&!nativeSkillCompanion(rows,r,e));
- if(roots.length!==1)return;const r=roots[0];
- if(r.isSidechain!==false||r.origin?.kind!=='human'||r.agentId)return;
- if(plainText(r)!==e.prompt||!samePath(r.cwd,e.cwd)||typeof r.timestamp!=='string')return;
- return {timestamp:r.timestamp,cwd:r.cwd};
-}
-function proveCodex(rows:any[],e:any):Proof|undefined{
- const metas=rows.filter(r=>r?.type==='session_meta'&&r.payload?.id===e.session_id);
- if(metas.length!==1)return;const meta=metas[0].payload;
- if(!['vscode','cli'].includes(meta.source))return;
- let turn:string|undefined;const starts:any[]=[],inputs:any[]=[],contexts:any[]=[];
- for(const r of rows){const p=r?.payload??{};
- if(r.type==='event_msg'&&p.type==='task_started'){turn=p.turn_id;if(turn===e.turn_id)starts.push(p);}
- if(r.type==='turn_context'&&typeof p.turn_id==='string')turn=p.turn_id;
- if(turn!==e.turn_id)continue;
- if(r.type==='turn_context')contexts.push(p);
- if(r.type==='response_item'&&p.type==='message'&&p.role==='user'&&Array.isArray(p.content)&&p.content.length===1&&p.content[0]?.type==='input_text'&&p.content[0].text===e.prompt)inputs.push(r);
- }
- if(starts.length!==1||inputs.length!==1)return;const a=starts[0].turn_attribution;
- if(!a||a.turn_id!==e.turn_id||a.turn_trigger!=='composer'||a.parent_turn_id!==null||a.initiating_agent_path!==null||a.root_turn_id!==e.turn_id)return;
- const cwd=contexts.length?contexts.at(-1).cwd:meta.cwd;
- if(!samePath(cwd,e.cwd)||typeof inputs[0].timestamp!=='string')return;
- return {timestamp:inputs[0].timestamp,cwd};
-}
 function intentId(provider:Provider,sessionId:string,inputId:string,prompt:string){
  const bytes=createHash('sha256').update(['agentwire-pair-v1',provider,sessionId,inputId,hash(prompt)].join('\0')).digest().subarray(0,16);
  bytes[6]=(bytes[6]&15)|80;bytes[8]=(bytes[8]&63)|128;const hex=bytes.toString('hex');
@@ -109,8 +67,8 @@ function intentId(provider:Provider,sessionId:string,inputId:string,prompt:strin
 export async function verifyPairIntent(c:InstallContext,provider:Provider,event:unknown,deps:PairDeps={}):Promise<PairIntent|undefined>{
  try{
  const e=await readPairEvent(c,provider,event);if(!e)return;const command=parsePairCommand(e.prompt)!;
- const inputId=(provider==='codex'?e.turn_id:e.prompt_id)!,file=e.transcript_path;
- const rows=await snapshot(file),proof=provider==='codex'?proveCodex(rows,e):proveClaude(rows,e);if(!proof)return;
+ const agent=getAgent(provider),inputId=e[agent.executionIdField]!,file=e.transcript_path;
+ const rows=await snapshot(file),proof=agent.provePairInput(rows,e);if(!proof)return;
  const captured=Date.parse(proof.timestamp),now=(deps.now??(()=>new Date()))().getTime();
  if(!Number.isFinite(captured)||!Number.isFinite(now)||captured>now||now>=captured+INTENT_MS)return;
  return {intentId:intentId(provider,e.session_id,inputId,e.prompt),source:{provider,sessionId:e.session_id,workspaceRoot:proof.cwd,availability:'candidate'},nativeInputId:inputId,command,capturedAt:new Date(captured).toISOString(),expiresAt:new Date(captured+INTENT_MS).toISOString(),proofRef:file+'#'+inputId};

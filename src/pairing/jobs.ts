@@ -8,7 +8,7 @@ import type {InstallContext} from '../installation/model.ts';
 import type {PairDeps} from './model.ts';
 
 export type Automation={schemaVersion:1;enabled:boolean;generation:string;enabledAt:string};
-export type PairJob={schemaVersion:1;requestId:string;generation:string;createdAt:string;expiresAt:string;revision:number;phase:'waiting_native'|'verified'|'applying'|'succeeded'|'failed'|'needs_check'|'disabled';intentId?:string;result?:any;errorCode?:string;startup?:{ownerPid:number;startedAt:string};notification:{phase:'pending'|'attempted'|'delivered'|'needs_check'|'offline';transportId?:string;body?:string;intent?:any;evidenceRef?:string;errorCode?:string}};
+export type PairJob={schemaVersion:1;requestId:string;generation:string;createdAt:string;expiresAt:string;revision:number;phase:'waiting_native'|'verified'|'applying'|'succeeded'|'failed'|'needs_check'|'disabled';intentId?:string;result?:any;errorCode?:string;startup?:{ownerPid:number;startedAt:string};notification:{phase:'pending'|'attempted'|'delivered'|'needs_check'|'offline'|'suppressed';suppressedAt?:string;transportId?:string;body?:string;intent?:any;evidenceRef?:string;errorCode?:string}};
 export const terminalJob=(j:PairJob)=>['succeeded','failed','needs_check','disabled'].includes(j.phase);
 export async function automationPath(c:InstallContext,rel:string){return safePath(c.installRoot,path.join(c.installRoot,'pairing',rel));}
 const stamp=(s:any)=>typeof s==='string'&&Number.isFinite(Date.parse(s));
@@ -26,7 +26,8 @@ export async function setAutomation(c:InstallContext,enabled:boolean,deps:Pick<P
  return automationLock(c,async()=>{const previous=await readAutomation(c);if(previous.enabled===enabled)return previous;const a:Automation={schemaVersion:1,enabled,generation:randomUUID(),enabledAt:(deps.now?.()||new Date()).toISOString()};await atomicBytes(await automationPath(c,'automation.json'),jsonBytes(a));return a;});
 }
 function validate(j:any):asserts j is PairJob{
- if(!j||j.schemaVersion!==1||!stamp(j.createdAt)||!stamp(j.expiresAt)||!Number.isSafeInteger(j.revision)||j.revision<0||!['waiting_native','verified','applying','succeeded','failed','needs_check','disabled'].includes(j.phase)||!['pending','attempted','delivered','needs_check','offline'].includes(j.notification?.phase))throw Error('pairing_job_invalid');
+ if(!j||j.schemaVersion!==1||!stamp(j.createdAt)||!stamp(j.expiresAt)||!Number.isSafeInteger(j.revision)||j.revision<0||!['waiting_native','verified','applying','succeeded','failed','needs_check','disabled'].includes(j.phase)||!['pending','attempted','delivered','needs_check','offline','suppressed'].includes(j.notification?.phase))throw Error('pairing_job_invalid');
+ if(j.notification.phase==='suppressed'&&(j.phase!=='failed'||j.errorCode!=='pairing_intent_expired'||j.result?.ok!==false||j.result.errorCode!=='pairing_intent_expired'||j.intentId||j.notification.intent||j.notification.transportId||j.notification.evidenceRef||j.notification.errorCode!=='expired_by_user'||!stamp(j.notification.suppressedAt)||Date.parse(j.notification.suppressedAt)<Date.parse(j.expiresAt)))throw Error('pairing_job_invalid');
  if(j.startup!==undefined&&(!j.startup||!Number.isSafeInteger(j.startup.ownerPid)||j.startup.ownerPid<=0||!stamp(j.startup.startedAt)))throw Error('pairing_job_invalid');
  try{assertId(j.requestId);assertId(j.generation);if(j.intentId)assertId(j.intentId);if(j.notification.transportId)assertId(j.notification.transportId);}catch{throw Error('pairing_job_invalid');}
  if(j.phase==='succeeded'&&j.result?.ok!==true||j.notification.body!==undefined&&(typeof j.notification.body!=='string'||Buffer.byteLength(j.notification.body)>32768))throw Error('pairing_job_invalid');
@@ -54,5 +55,15 @@ export async function updatePairJob(c:InstallContext,j:PairJob):Promise<PairJob>
 }
 /** Internal: caller owns automation.lock, including mode/execution admission. */
 export async function updatePairJobLocked(c:InstallContext,j:PairJob):Promise<PairJob>{validate(j);const before=await readPairJob(c,j.requestId);if(!before||before.revision!==j.revision||before.generation!==j.generation||before.createdAt!==j.createdAt||before.expiresAt!==j.expiresAt)throw Error('pairing_job_changed');const next={...j,revision:j.revision+1};await atomicBytes(await automationPath(c,path.join('jobs',j.requestId+'.json')),jsonBytes(next));return next;}
-async function pruneLocked(c:InstallContext,deps:Pick<PairDeps,'now'>){const now=+(deps.now?.()||new Date());for(const j of await listPairJobs(c)){if(now-Date.parse(j.createdAt)<86400000||!terminalJob(j)||j.phase==='needs_check'||['attempted','needs_check'].includes(j.notification.phase))continue;await unlink(await automationPath(c,path.join('jobs',j.requestId+'.json')));}}
+async function pruneLocked(c:InstallContext,deps:Pick<PairDeps,'now'>){const now=+(deps.now?.()||new Date());for(const j of await listPairJobs(c)){if(now-Date.parse(j.createdAt)<86400000||!terminalJob(j)||j.phase==='needs_check'||['attempted','needs_check','suppressed'].includes(j.notification.phase))continue;await unlink(await automationPath(c,path.join('jobs',j.requestId+'.json')));}}
 export const prunePairJobs=(c:InstallContext,deps:Pick<PairDeps,'now'>={})=>automationLock(c,()=>pruneLocked(c,deps));
+
+
+/** User-authorized retirement of expired pre-identity notices; never settles a write. */
+export async function suppressExpiredPairNotification(c:InstallContext,id:string,deps:Pick<PairDeps,'now'>={}){
+ assertId(id);return automationLock(c,async()=>{
+  const j=await readPairJob(c,id);if(!j)throw Error('pairing_job_missing');if(j.notification.phase==='suppressed')return j;
+  const now=deps.now?.()||new Date();if(now.getTime()<Date.parse(j.expiresAt)||j.phase!=='failed'||j.errorCode!=='pairing_intent_expired'||j.result?.ok!==false||j.result.errorCode!=='pairing_intent_expired'||j.intentId||j.notification.phase!=='pending'||j.notification.intent||j.notification.transportId||j.notification.evidenceRef)throw Error('notification_suppression_requires_check');
+  return updatePairJobLocked(c,{...j,notification:{phase:'suppressed',errorCode:'expired_by_user',suppressedAt:now.toISOString()}});
+ });
+}

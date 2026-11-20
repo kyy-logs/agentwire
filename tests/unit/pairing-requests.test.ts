@@ -69,3 +69,9 @@ test('unpaired router returns the exact request ticket in native context before 
  assert.equal(JSON.parse(await readFile(f.state,'utf8')).intents.length,0);await f.save();assert.equal((await resolvePairRequest(f.c,ticket,f.deps)).source.sessionId,f.event.session_id);
  output='';await routeHook(f.c,provider,[Buffer.from(JSON.stringify(f.event))],deps);assert.ok(output.includes(ticket));}
 });
+
+test('worker module load failure preserves an exact queryable job and native context',async t=>{
+ const {spawnSync}=await import('node:child_process'),{pathToFileURL}=await import('node:url');const {setAutomation,readPairJob}=await import('../../src/pairing/jobs.ts');const f=await fixture(t);await f.save();await setAutomation(f.c,true,f.deps);
+ const program=`import {registerHooks} from 'node:module';registerHooks({resolve(s,c,next){if(new URL(s,c.parentURL).pathname.endsWith('/pairing/worker.ts'))throw Error('fixture_worker_unavailable');return next(s,c);}});const {routeHook}=await import(${JSON.stringify(pathToFileURL(path.resolve('src/installation/hook-router.ts')).href)});process.exitCode=await routeHook(${JSON.stringify(f.c)},'codex',[Buffer.from(${JSON.stringify(JSON.stringify(f.event))})],{now:()=>new Date(${epoch})});`;
+ const r=spawnSync(process.execPath,['--experimental-strip-types','--input-type=module','-e',program],{encoding:'utf8',windowsHide:true});assert.equal(r.status,0,r.stderr);const context=JSON.parse(r.stdout).hookSpecificOutput.additionalContext,id=/AGENTWIRE_PAIR_REQUEST_ID=([a-f0-9-]{36})/.exec(context)?.[1];assert.ok(id);assert.ok(context.includes('pairing_worker_start_requires_check'));const job=await readPairJob(f.c,id);assert.equal(job?.phase,'needs_check');assert.equal(job?.errorCode,'pairing_worker_start_requires_check');const state=JSON.parse(await readFile(f.state,'utf8'));assert.equal(state.invitations.length,0);assert.equal(state.intents.length,0);
+});

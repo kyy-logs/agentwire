@@ -148,3 +148,27 @@ for(const mode of ['peer','client_id','duplicate_input','duplicate_end','missing
  await f.save();if(mode==='duplicate_file'||mode==='duplicate_peer_file'){const copy=structuredClone(f.rows);if(mode==='duplicate_peer_file')copy[1].payload.turn_attribution.turn_trigger='queue';await writeFile(path.join(path.dirname(f.file),'copy-'+f.peer.sessionId+'.jsonl'),copy.map(x=>JSON.stringify(x)).join('\n')+'\n');}if(mode==='invalid_json')await writeFile(f.file,'not json\n',{flag:'a'});
  const result=await f.processor.process(f.e);assert.ok(['deferred','needs_check'].includes(result.status));assert.equal(await f.main.lifecycle.store.isApplied(f.e.eventKey),false);assert.equal(await f.main.lifecycle.store.getExecution(f.e),undefined);assert.equal(f.sent.length,0);
 });
+
+for(const legacy of [false,true])for(const multiple of [false,true])test('desktop async-question human '+(multiple?'steering':'answer')+' is audited on '+(legacy?'legacy ready':'identity paired')+' connection',async t=>{
+ const f=await fixture(t);if(legacy)await legacyReady(f);f.rows[1].payload.turn_attribution.turn_trigger='send_user_message_async_question';if(multiple)humanInputs(f);await f.save();await f.main.lifecycle.store.putEvent(f.e);
+ const nativeBefore=await readFile(f.file),eventBefore=await readFile(f.main.lifecycle.store.file('events',f.e.eventKey)),pairBefore=await readFile(f.c.installRoot+'/pairing/state.json');
+ assert.equal((await inspectConnectionWork(f.c,f.r.connectionId)).artifactsPending,1);
+ assert.deepEqual(await f.processor.process(f.e),{status:'ignored',reason:'verified_native_non_task'});
+ const mark=await f.main.lifecycle.store.read(f.main.lifecycle.store.file('applied',f.e.eventKey));assert.equal(mark.proof.inputCount,multiple?3:1);assert.equal(mark.proof.nativeOutcome,'response_ended');
+ assert.deepEqual(await readFile(f.file),nativeBefore);assert.deepEqual(await readFile(f.main.lifecycle.store.file('events',f.e.eventKey)),eventBefore);assert.deepEqual(await readFile(f.c.installRoot+'/pairing/state.json'),pairBefore);
+ assert.equal((await inspectConnectionWork(f.c,f.r.connectionId)).artifactsPending,0);assert.equal(await f.main.lifecycle.store.getExecution(f.e),undefined);assert.equal(f.sent.length,0);
+});
+for(const mode of ['peer_provenance','missing_provenance','child','initiating_agent','wrong_root','wrong_turn','missing_end','duplicate_end','duplicate_input','client_id','queue','unknown_trigger','cli','zero_input_abort','zero_input_stop','unfinished_task','unmapped_write','duplicate_file'] as const)test('async-question recovery preserves blocker for '+mode,async t=>{
+ const f=await fixture(t,'codex',mode==='zero_input_abort');f.rows[1].payload.turn_attribution.turn_trigger='send_user_message_async_question';const input=f.rows[2].payload,a=f.rows[1].payload.turn_attribution;
+ if(mode==='peer_provenance')input.internal_chat_message_metadata_passthrough.content_item_metadata[0].provenance.type='agent';
+ if(mode==='missing_provenance')delete input.internal_chat_message_metadata_passthrough.content_item_metadata;
+ if(mode==='child')a.parent_turn_id=randomUUID();if(mode==='initiating_agent')a.initiating_agent_path='/root/child';if(mode==='wrong_root')a.root_turn_id=randomUUID();
+ if(mode==='wrong_turn')input.internal_chat_message_metadata_passthrough.turn_id=randomUUID();
+ if(mode==='missing_end')f.rows.pop();if(mode==='duplicate_end')f.rows.push(structuredClone(f.rows.at(-1)));if(mode==='duplicate_input')f.rows.splice(3,0,structuredClone(f.rows[2]));
+ if(mode==='client_id')input.client_id=randomUUID();if(mode==='queue')a.turn_trigger='queue';if(mode==='unknown_trigger')a.turn_trigger='unknown';if(mode==='cli')f.rows[0].payload.source='cli';
+ if(mode==='zero_input_stop')f.rows.splice(2,1);
+ if(mode==='unfinished_task')await f.main.bus.store.putNew(createTask({messageId:randomUUID(),from:'claude',to:'codex',targetSessionId:f.peer.sessionId,body:'unresolved task'},realClock));
+ if(mode==='unmapped_write'){const id=randomUUID(),dir=path.join(f.main.bus.store.root,'native','attempts');await mkdir(dir,{recursive:true});await writeFile(path.join(dir,id+'.json'),JSON.stringify({schemaVersion:1,wireVersion:'clean-v1',connectionId:f.r.connectionId,provider:'codex',targetSessionId:f.peer.sessionId,sourceSessionId:f.r.claude.sessionId,messageId:randomUUID(),attemptId:id,transportId:randomUUID(),bodySha256:'a'.repeat(64),createdAt:f.e.observedAt,updatedAt:f.e.observedAt,phase:'write_started'}));}
+ await f.save();if(mode==='duplicate_file')await writeFile(path.join(path.dirname(f.file),'copy-'+f.peer.sessionId+'.jsonl'),await readFile(f.file));await f.main.lifecycle.store.putEvent(f.e);
+ assert.equal((await f.processor.process(f.e)).status,'deferred');assert.equal(await f.main.lifecycle.store.isApplied(f.e.eventKey),false);assert.equal(await f.main.lifecycle.store.getExecution(f.e),undefined);assert.equal(f.sent.length,0);
+});

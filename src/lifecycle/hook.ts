@@ -1,3 +1,5 @@
+import {randomUUID} from 'node:crypto';
+import {requestBus} from '../ipc.ts';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {assertId,realClock} from '../model.ts';
@@ -5,8 +7,9 @@ import {FileMessageStore} from '../store.ts';
 import {FileLifecycleStore} from './store.ts';
 import {normalizeHook} from './normalize.ts';
 import type {LifecycleEvent} from './model.ts';
+import type {HookTrace} from '../installation/hook-timing.ts';
 export async function writeHookEvent(root:string,event:LifecycleEvent){return new FileLifecycleStore(root).enqueue(event);}
-export async function runHook(args:string[],input:AsyncIterable<Uint8Array>|Iterable<Uint8Array>=process.stdin){
+export async function runHook(args:string[],input:AsyncIterable<Uint8Array>|Iterable<Uint8Array>=process.stdin,trace?:HookTrace){
   try{
     if(args.length!==6||args[0]!=='--state'||args[2]!=='--provider'||args[4]!=='--session'||!path.isAbsolute(args[1])||!['codex','claude'].includes(args[3]))throw new Error('invalid_arguments');
     assertId(args[5]);let size=0;const chunks:Buffer[]=[];
@@ -14,6 +17,7 @@ export async function runHook(args:string[],input:AsyncIterable<Uint8Array>|Iter
     const raw=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(chunks)));
     if(raw?.session_id!==args[5])return 0;
     const event=normalizeHook(args[3] as 'codex'|'claude',raw);
+    trace?.mark('normalized');
     if(!event){if(['UserPromptSubmit','Stop','StopFailure','Interrupt'].includes(raw.hook_event_name)&&!raw.agent_id&&!raw.is_sidechain)throw new Error('missing_or_unsupported_native_id');return 0;}
     if(event.phase!=='input'){
       await new FileLifecycleStore(args[1]).enqueueCleanHint({schemaVersion:1,provider:event.provider,sessionId:event.sessionId,nativeExecutionId:event.nativeExecutionId,phase:event.phase,observedAt:event.observedAt,backgroundPending:!!event.backgroundPending,continuation:!!event.continuation,incomplete:!!event.incomplete,...(event.errorCode?{errorCode:event.errorCode}:{})});
@@ -24,7 +28,13 @@ export async function runHook(args:string[],input:AsyncIterable<Uint8Array>|Iter
       const record=input?.messageId?await new FileMessageStore(args[1],realClock).get(input.messageId):undefined;
       if(!input||!['task','followup'].includes(input.inputKind||'')||!input.dispatchNonce||record?.returnMode!=='auto'||record.dispatchNonce!==input.dispatchNonce||record.message.targetSessionId!==event.sessionId||record.message.kind!==input.inputKind||record.attempts<1)delete event.output;
     }
-    await writeHookEvent(args[1],event);return 0;
+    await writeHookEvent(args[1],event);
+    trace?.mark('capture_persisted');
+    // Best effort after atomic persistence. A missing/old/offline Bus must never
+    // turn a captured event into a Hook failure; periodic recovery is the fallback.
+    trace?.mark('wake_started');
+    try{await requestBus(args[1],{requestId:randomUUID(),op:'wake'},{timeoutMs:150});}catch{}finally{trace?.mark('wake_finished');}
+    return 0;
   }catch(e){const code=e instanceof Error&&/^[a-z_]+$/.test(e.message)?e.message:'capture_failed';process.stderr.write('lifecycle_hook_error '+code+'\n');return 1;}
 }
 if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url))process.exitCode=await runHook(process.argv.slice(2));
