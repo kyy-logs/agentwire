@@ -1,0 +1,76 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {proveCodexAction,proveClaudeAction,verifyActionOwnership} from '../../src/collaboration/native-actions.ts';
+import {actionDigest} from '../../src/collaboration/model.ts';
+const launcher='C:/fixture/labus.cmd';
+function fixture(provider:'codex'|'claude'='codex'){
+ const actor={provider,sessionId:randomUUID()},turn=randomUUID();
+ const request:any={operationId:randomUUID(),taskId:randomUUID(),actor,kind:'question',expectedRevision:0,body:'Which behavior?'};
+ const command='"'+launcher+'" question --provider '+provider+' --source-session '+actor.sessionId+' --task '+request.taskId+' --operation '+request.operationId+' --revision 0 --text-file "C:/fixture/question.txt"';
+ const receipt={ok:true,operation:'question',phase:'pending_verification',data:{operationId:request.operationId,requestSha256:actionDigest(request)}};
+ return {actor,turn,request,command,receipt};
+}
+function codexRows(f:ReturnType<typeof fixture>){
+ const id=randomUUID(),meta={turn_id:f.turn,create_time:'2026-11-20T00:00:00Z'};
+ return [{type:'session_meta',payload:{id:f.actor.sessionId,source:'vscode'}},
+ {type:'event_msg',payload:{type:'task_started',turn_id:f.turn}},
+ {type:'custom_tool_call',payload:{name:'exec',call_id:id,input:'text((await tools.exec_command('+JSON.stringify({cmd:f.command})+')).output);',internal_chat_message_metadata_passthrough:meta}},
+ {type:'custom_tool_call_output',payload:{call_id:id,output:[{type:'input_text',text:JSON.stringify(f.receipt)}],internal_chat_message_metadata_passthrough:meta}}];
+}
+function claudeRows(f:ReturnType<typeof fixture>){
+ const root=randomUUID(),call=randomUUID(),tool=randomUUID(),base={sessionId:f.actor.sessionId,isSidechain:false};
+ return [{...base,type:'user',uuid:root,promptId:f.turn,origin:{kind:'peer'},message:{content:'task'}},
+ {...base,type:'assistant',uuid:call,parentUuid:root,message:{content:[{type:'tool_use',id:tool,name:'Bash',input:{command:f.command}}]}},
+ {...base,type:'user',uuid:randomUUID(),parentUuid:call,promptId:f.turn,sourceToolAssistantUUID:call,message:{content:[{type:'tool_result',tool_use_id:tool,content:JSON.stringify(f.receipt)}]}}];
+}
+test('Codex tool call and exact result prove one native execution',()=>{
+ const f=fixture();const r=proveCodexAction(codexRows(f),f.request,[launcher]);assert.equal(r.status,'verified');if(r.status==='verified'){assert.equal(r.ref.nativeExecutionId,f.turn);assert.equal(r.requestSha256,actionDigest(f.request));}
+});
+test('Claude tool result must belong to its exact tool-use and parent lineage',()=>{
+ const f=fixture('claude');const r=proveClaudeAction(claudeRows(f),f.request,[launcher]);assert.equal(r.status,'verified');if(r.status==='verified')assert.equal(r.ref.nativeExecutionId,f.turn);
+});
+test('operation in ordinary text or unsupported orchestration is not proof',()=>{
+ const f=fixture(),rows=codexRows(f);rows[2].payload.input='text('+JSON.stringify(f.command)+');';assert.notEqual(proveCodexAction(rows,f.request,[launcher]).status,'verified');
+});
+test('tool result missing is pending and a mismatched digest never verifies',()=>{
+ for(const provider of ['codex','claude'] as const){const f=fixture(provider),rows=provider==='codex'?codexRows(f):claudeRows(f),prove=provider==='codex'?proveCodexAction:proveClaudeAction;
+ assert.equal(prove(rows.slice(0,-1),f.request,[launcher]).status,'pending');
+ const broken=JSON.parse(JSON.stringify(rows).replaceAll(actionDigest(f.request),'0'.repeat(64)));assert.notEqual(prove(broken,f.request,[launcher]).status,'verified');}
+});
+test('two executions for the same operation are a conflict rather than latest wins',()=>{
+ const f=fixture(),a=codexRows(f),b=codexRows({...f,turn:randomUUID()}).slice(1);assert.equal(proveCodexAction([...a,...b],f.request,[launcher]).status,'conflict');
+});
+test('wrong session, sidechain and wrong parent are rejected',()=>{
+ const f=fixture('claude'),rows=claudeRows(f);
+ for(const mutate of [(r:any[])=>r[1].sessionId=randomUUID(),(r:any[])=>r[1].isSidechain=true,(r:any[])=>r[2].parentUuid=randomUUID(),(r:any[])=>r[2].sourceToolAssistantUUID=randomUUID(),(r:any[])=>r[2].promptId=randomUUID()]){
+ const copy=structuredClone(rows);mutate(copy);assert.notEqual(proveClaudeAction(copy,f.request,[launcher]).status,'verified');}
+});
+test('Codex output from another turn or another call cannot prove the action',()=>{
+ const f=fixture();for(const field of ['turn','call']){const rows=codexRows(f);if(field==='turn')rows[3].payload.internal_chat_message_metadata_passthrough.turn_id=randomUUID();else rows[3].payload.call_id=randomUUID();assert.notEqual(proveCodexAction(rows,f.request,[launcher]).status,'verified');}
+});
+test('shell chaining, another launcher and another task cannot borrow a receipt',()=>{
+ const f=fixture();for(const command of [f.command+'; echo done',f.command.replace('C:/fixture/labus.cmd','C:/other/labus.cmd'),f.command.replace(f.request.taskId,randomUUID())]){
+ assert.notEqual(proveCodexAction(codexRows({...f,command}),f.request,[launcher]).status,'verified');}
+});
+test('ordinary human input breaks Claude ancestry even if prompt id is reused',()=>{
+ const f=fixture('claude'),rows=claudeRows(f),ordinary={...rows[0],uuid:randomUUID(),origin:{kind:'human'}};
+ rows[1].parentUuid=ordinary.uuid;rows.splice(1,0,ordinary);
+ // tool still belongs to the new human turn, not to the peer task; ownership checks must reject it.
+ const r=proveClaudeAction(rows,f.request,[launcher]);const task:any={taskId:f.request.taskId,initiator:{provider:'codex',sessionId:randomUUID()},executor:f.actor,currentMessageId:randomUUID()};
+ const mapped:any=[{phase:'mapped',provider:'claude',targetSessionId:f.actor.sessionId,nativeExecutionId:randomUUID(),messageId:task.currentMessageId}];
+ assert.throws(()=>verifyActionOwnership(task,f.request,r,mapped),/collaboration_execution_mismatch/);
+});
+test('executor proof must match this exact task input, not another task in same session',()=>{
+ const f=fixture(),e=proveCodexAction(codexRows(f),f.request,[launcher]),message=randomUUID(),task:any={taskId:f.request.taskId,executor:f.actor,initiator:{provider:'claude',sessionId:randomUUID()},currentMessageId:message};
+ const good:any={phase:'mapped',provider:'codex',targetSessionId:f.actor.sessionId,nativeExecutionId:f.turn,messageId:message};
+ assert.equal(verifyActionOwnership(task,f.request,e,[good]).nativeExecutionId,f.turn);
+ assert.throws(()=>verifyActionOwnership(task,f.request,e,[{...good,messageId:randomUUID()}]),/collaboration_execution_mismatch/);
+ assert.throws(()=>verifyActionOwnership(task,f.request,{status:'pending'},[good]),/collaboration_action_unverified/);
+});
+test('ambiguous native input mapping and wrong actor role fail closed',()=>{
+ const f=fixture(),e=proveCodexAction(codexRows(f),f.request,[launcher]),task:any={taskId:f.request.taskId,executor:f.actor,initiator:{provider:'claude',sessionId:randomUUID()},currentMessageId:randomUUID()};
+ const row:any={phase:'mapped',provider:'codex',targetSessionId:f.actor.sessionId,nativeExecutionId:f.turn,messageId:task.currentMessageId};
+ assert.throws(()=>verifyActionOwnership(task,f.request,e,[row,{...row}]),/collaboration_execution_mismatch/);
+ assert.throws(()=>verifyActionOwnership(task,{...f.request,kind:'answer'},e,[row]),/collaboration_role_mismatch/);
+});
