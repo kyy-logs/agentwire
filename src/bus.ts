@@ -1,3 +1,6 @@
+import {CollaborationController} from './collaboration/controller.ts';
+import type {CollaborationStore} from './collaboration/store.ts';
+import type {ActionEvidenceReader} from './collaboration/model.ts';
 import type {Timing} from './latency.ts';
 import type {NativeDispatcher} from './native/dispatcher.ts';
 import type {DispatchIntent} from './native/model.ts';
@@ -13,6 +16,8 @@ const terminal=new Set(['completed','delivered','failed','expired','stopped']);
 const expiredReplyCheck=(r:MessageRecord)=>r.state==='expired'&&r.message.schemaVersion===2&&r.message.kind==='reply'&&r.attempts>0&&!!r.activeAttemptId;
 export class LocalBus {
   store:MessageStore;adapters:Map<string,AgentAdapter>;bindings:Map<string,AgentBinding>;clock:Clock;policy:typeof defaultPolicy;chain:Promise<unknown>=Promise.resolve();saveBindings?:Options['saveBindings'];
+  collaboration?:CollaborationController;
+  enableCollaboration(o:{store:CollaborationStore;proof:ActionEvidenceReader}){if(!this.connectionId)throw Error('collaboration_connection_required');this.collaboration=new CollaborationController({...o,clock:this.clock,connectionId:this.connectionId,bindings:[...this.bindings.values()],inputs:async()=>this.nativeDispatcher?this.nativeDispatcher.store.list():[],commitTransport:i=>this.acceptOne(i,true),readTransport:id=>this.store.get(id),isStopped:()=>this.dispatchStopped});return this.collaboration;}
   onTiming?:Options['onTiming'];
   async timing(event:Timing){try{await this.onTiming?.(event);}catch{}}
   nativeDispatcher?:NativeDispatcher;connectionId?:string;dispatchStopped=false;newAutoWireVersion:'legacy'|'clean-v1';
@@ -45,10 +50,11 @@ export class LocalBus {
     if(candidates.length!==1)throw new Error(candidates.length?'ambiguous_current_task':'no_current_task');
     return this.acceptOne({...input,replyTo:candidates[0].message.messageId});
   });}
-  private async acceptOne(input:MessageInput):Promise<MessageRecord>{
+  private async acceptOne(input:MessageInput,structuredInternal=false):Promise<MessageRecord>{
     if(!input||Object.keys(input).some(k=>!['messageId','kind','from','to','replyTo','body','returnMode'].includes(k)))throw new Error('invalid_input');
     if(input.returnMode!==undefined&&(!['manual','auto'].includes(input.returnMode)||input.kind!=='task'))throw new Error('invalid_return_mode');
     assertId(input.messageId);assertAgent(input.from);if(!['task','reply','followup'].includes(input.kind))throw new Error('invalid_kind');
+    if(!structuredInternal&&this.collaboration){const parent=input.replyTo?await this.store.get(input.replyTo):undefined;const family=parent?.message.taskId??input.messageId;if(await this.collaboration.isStructuredFamily(family))throw Error('collaboration_action_required');}
     const old=await this.store.get(input.messageId);
     if(old){const m=old.message;if((input.kind==='task'&&(m.returnMode??'manual')!==(input.returnMode??'manual'))||m.kind!==input.kind||m.from!==input.from||m.body!==input.body||m.replyTo!==input.replyTo||(input.kind==='task'?m.to!==input.to:input.to!==undefined))throw new Error('conflict');if(m.kind==='reply'&&!old.late){const parent=await this.store.get(m.replyTo!);if(parent&&!['stopped','expired'].includes(parent.state)&&!parent.stoppedAt&&parent.state!=='completed'){parent.state='completed';parent.resultRef=m.messageId;await this.update(parent);}}return old;}
     this.binding(input.from);const all=await this.store.list();let m:AgentMessage,late=false;
@@ -84,6 +90,7 @@ export class LocalBus {
   applyCapturedResult(result:CapturedResult){return this.serial(()=>this.applyCapturedResultOne(result));}
   async applyCapturedResultOne(result:CapturedResult):Promise<MessageRecord|undefined>{
     const captureStarted=performance.now();validateResult(result);const parent=await this.store.get(result.messageId);if(!parent)throw new Error('captured_parent_missing');
+    if(this.collaboration&&await this.collaboration.isStructuredFamily(parent.message.taskId)){const consumed=await this.collaboration.consumeTerminalOne(result);if(consumed.handled)return consumed.reply;}
     const binding=this.binding(parent.message.to);
     if(parent.returnMode!=='auto'||parent.message.kind==='reply'||parent.message.targetSessionId!==result.ref.sessionId||binding.kind!==result.ref.provider||parent.attempts<1)throw new Error('captured_parent_mismatch');
     const family=(await this.store.list()).filter(r=>r.message.taskId===parent.message.taskId),root=family.find(r=>r.message.messageId===parent.message.taskId);
@@ -102,6 +109,7 @@ export class LocalBus {
     await this.update(latest);if(!old)await this.timing({stage:'automatic_result_committed',messageId:result.messageId,taskId:parent.message.taskId,state:latest.state,durationsMs:{captureMs:performance.now()-captureStarted}});return reply;
   }
   async tick(){return this.serial(async()=>{
+    await this.collaboration?.drainOne();
     let all=await this.store.list();
     for(const r of all){
       if(terminal.has(r.state))continue;
@@ -181,6 +189,6 @@ export class LocalBus {
     return r;
   }
   async check(id:string){return this.serial(async()=>{assertId(id);const r=await this.store.get(id);if(!r)throw new Error('message_not_found');if(['needs_check','submitted'].includes(r.state)||expiredReplyCheck(r))await this.reconcileRecord(r,true);return r;});}
-  async stop(taskId:string){return this.serial(async()=>{assertId(taskId);const family=(await this.store.list()).filter(r=>r.message.taskId===taskId);if(!family.length)throw new Error('task_not_found');const root=family.find(r=>r.message.messageId===taskId);if(!root)throw new Error('missing_root');root.stoppedAt??=this.now();await this.update(root);for(const r of family)if(!terminal.has(r.state)){r.state='stopped';r.lastError='bus_stopped_native_agent_not_cancelled';await this.update(r);}});}
+  async stop(taskId:string){return this.serial(async()=>{assertId(taskId);const family=(await this.store.list()).filter(r=>r.message.taskId===taskId);if(!family.length)throw new Error('task_not_found');const root=family.find(r=>r.message.messageId===taskId);if(!root)throw new Error('missing_root');await this.collaboration?.stopOne(taskId);root.stoppedAt??=this.now();await this.update(root);for(const r of family)if(!terminal.has(r.state)){r.state='stopped';r.lastError='bus_stopped_native_agent_not_cancelled';await this.update(r);}});}
   async recover(){return this.serial(()=>this.store.recover(this.clock.now()));}
 }
