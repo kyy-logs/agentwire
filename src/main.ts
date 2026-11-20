@@ -1,3 +1,4 @@
+import {recoverCollaborationOne} from './collaboration/recovery.ts';
 import {CollaborationStore} from './collaboration/store.ts';
 import {createNativeActionReader} from './collaboration/native-reader.ts';
 import {createAgentRuntime} from './agents/registry.ts';
@@ -86,6 +87,7 @@ export async function startMain(root:string,options:MainOptions={}){
     bus=new LocalBus({onTiming:event=>recordTiming(root,event),nativeDispatcher:dispatcher,connectionId:options.connectionId,newAutoWireVersion:options.newAutoWireVersion,store:new FileMessageStore(root,clock),bindings,adapters,clock,saveBindings:b=>atomicJson(path.join(root,'bindings.json'),{schemaVersion:1,bindings:b})});
     if(options.connectionId){const collabStore=new CollaborationStore(root);await collabStore.inspect();bus.enableCollaboration({store:collabStore,proof:createNativeActionReader({home:os.homedir(),launchers:[...(installRoot?[path.join(installRoot,'bin','labus.cmd'),path.join(installRoot,'bin','labus.cmd').replaceAll('\\','/')]:[])]})});}
     const report=await bus.recover();storageError=report.quarantinedFiles.length>0;await log('started',{recovery:report});
+    if(bus.collaboration)await bus.serial(()=>recoverCollaborationOne(bus!.collaboration!));
     const controlExecution=installRoot?(async(ref:any)=>{const c={installRoot:installRoot!,home:os.homedir(),sourceRoot:installRoot!,nodeExe:process.execPath},id=options.connectionId||path.basename(path.dirname(root));return await isPairControlExecution(c,id,ref)||await isSwitchControlExecution(c,id,ref);}):undefined;
     const nonTaskExecution=installRoot?createNonTaskVerifier({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath},options.connectionId||path.basename(path.dirname(root))):undefined;
     lifecycle=new LifecycleProcessor(bus,new FileLifecycleStore(root),controlExecution,nonTaskExecution);await lifecycle.recover();

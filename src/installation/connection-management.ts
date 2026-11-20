@@ -1,3 +1,4 @@
+import {inspectCollaborationWork} from '../collaboration/recovery.ts';
 import path from 'node:path';
 import net from 'node:net';
 import {pipeFor} from '../ipc.ts';
@@ -76,6 +77,7 @@ export async function inspectConnectionWork(c:InstallContext,id:string){
  work.artifactsPending+=(await pendingLifecycleEvents(c,id)).length;
  for(const e of await names(c,path.join(root,'lifecycle','clean-hints'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');const file=await safePath(c.installRoot,path.join(root,'lifecycle','clean-hints',e.name)),hint=JSON.parse(await readFile(file,'utf8'));validateCleanHint(hint);const {observedAt,...semantic}=hint;if(digest(JSON.stringify(semantic))+'.json'!==e.name)throw Error('connection_storage_requires_check');}
  for(const e of await names(c,path.join(root,'lifecycle','results'))){if(!e.isFile()||!e.name.endsWith('.json'))throw Error('connection_storage_requires_check');await safePath(c.installRoot,path.join(root,'lifecycle','results',e.name));const result=await life.getResult(e.name.slice(0,-5));if(!result||!records.has(result.messageId))throw Error('connection_storage_requires_check');}
+ const collaboration=await inspectCollaborationWork(root);work.unfinished+=collaboration.unfinished;work.uncertain+=collaboration.uncertain;work.artifactsPending+=collaboration.artifactsPending;
  return work;
 }
 export async function listConnections(c:InstallContext,source:SourceRef,deps:PairDeps&{includeArchived?:boolean}={}){
