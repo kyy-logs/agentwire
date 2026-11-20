@@ -125,3 +125,5 @@ npm test
 - [开发协作边界](docs/DEVELOPMENT-WORKFLOW.md)
 - [版本记录](CHANGELOG.md)
 - [MIT 许可证](LICENSE)
+
+结构化协作新增显式提问、回答、交付、验收与同任务修改（默认模式不变），参见 [使用与兼容边界](docs/structured-collaboration.md)。本次实现尚未安装及验证真实窗口。

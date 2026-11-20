@@ -1,4 +1,11 @@
 const actions:Record<string,[string,string]>={
+ collaboration_action_required:['结构化任务尚缺显式提问或交付动作；回合结束不是业务完成。','inspect_exact_task_action_and_native_turn_do_not_resend'],
+ collaboration_revision_conflict:['任务版本已改变，本次动作未推进。','inspect_exact_task_revision_do_not_guess_latest_or_create_new_operation'],
+ collaboration_action_unverified:['动作的原生工具证据尚未确认。','inspect_original_operation_and_native_result_do_not_replay'],
+ collaboration_storage_requires_check:['协作账本需要检查，暂停推进并保留原始文件。','inspect_original_collaboration_storage_do_not_clear_history'],
+ collaboration_execution_budget_exhausted:['原任务执行次数已达上限；不会自动刷新预算。','review_original_task_with_user_do_not_spawn_new_task'],
+ collaboration_question_budget_exhausted:['原任务提问次数已达上限。','review_original_task_with_user_do_not_spawn_new_task'],
+ collaboration_service_upgrade_required:['当前服务尚不支持结构化协作，未提交该动作。','review_runtime_update_do_not_probe_or_change_connections'],
  pairing_code_used:['连接码已使用，本次兑换未执行；原配对是否仍有效需单独核对。','inspect_current_pairing_before_generating_a_new_code_do_not_redeem_again'],
  pairing_code_expired:['连接码已过期，本次兑换未执行。','generate_a_new_code_in_target_chat'],
  pairing_code_invalid:['未找到可用的连接码，本次兑换未执行。','check_current_code_or_generate_a_new_one_in_target_chat'],

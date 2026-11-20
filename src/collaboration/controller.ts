@@ -28,7 +28,7 @@ export class CollaborationController{
  if(a.phase==='waiting_stop'&&a.result)return this.finishTerminal(a);if(a.phase==='prepared')return this.finishOutbox(a);return a;
  }
  if(a.phase==='verified'){this.check(t,a.request);const next={...t,revision:t.revision+1} as TaskRecord;
- if(a.request.kind==='accept'){next.phase='completed';next.businessVerdict='accepted';}else{next.phase='working';next.executions++;next.currentMessageId=derivedId(id+':followup');delete next.lastError;a.outbox={messageId:next.currentMessageId,kind:'followup',from:a.request.actor.provider,replyTo:t.currentMessageId,body:a.request.body!};}
+ if(a.request.kind==='accept'){next.phase='completed';next.businessVerdict='unverified';}else{next.phase='working';next.executions++;next.currentMessageId=derivedId(id+':followup');delete next.lastError;a.outbox={messageId:next.currentMessageId,kind:'followup',from:a.request.actor.provider,replyTo:t.currentMessageId,body:a.request.body!};}
  a.phase='prepared';a.checkpoints={intent:{expectedRevision:t.revision,nextTask:next,phase:'prepared'}};await this.store.saveAction(a);}
  return this.finishOutbox(a);
  }

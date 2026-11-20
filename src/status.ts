@@ -57,3 +57,15 @@ function waitingDescription(r:MessageRecord,records:MessageRecord[],now:Date):Wa
  if(r.state==='submitting')return {reason:'submission_in_progress',summary:'消息正在提交，尚未确认对方收到。',nextStep:'等待投递证据，不要再次发送。'};
  return {reason:'awaiting_result',summary:'消息已提交，正在等待处理结果；具体执行或审批状态尚未确认。',nextStep:'等待原任务结果；若需排查请查看目标原聊天，不要重复发送。'};
 }
+
+import type {TaskRecord,ActionRecord} from './collaboration/model.ts';
+/** Business ledger page: independent cursor, no report bodies or native transcript text. */
+export function collaborationPage(records:TaskRecord[],options:{after?:string;limit?:number;taskId?:string}={},actions:ActionRecord[]=[]){
+ const limit=options.limit??50;if(!Number.isInteger(limit)||limit<1||limit>100)throw Error('invalid_status_limit');
+ if(options.taskId!==undefined)assertId(options.taskId);
+ const rows=options.taskId?records.filter(t=>t.taskId===options.taskId):records;let start=0;
+ if(options.after!==undefined){assertId(options.after);const at=rows.findIndex(t=>t.taskId===options.after);if(at<0)throw Error('invalid_status_cursor');start=at+1;}
+ const descriptions:Record<string,[string,string]>={working:['executor','执行方处理任务中；回合结束不是业务交付。'],question_pending:['executor_stop','提问动作已登记，等待精确回合的安全结束事件。'],waiting_answer:['initiator_answer','等待原任务发起方回答当前问题。'],delivery_pending:['executor_stop','交付动作已登记，等待精确回合的报告采集。'],waiting_acceptance:['initiator_acceptance','已采集报告，等待发起方验收或要求修改；业务结论未验证。'],completed:['none','发起方已验收当前交付；程序未验证业务结论。'],needs_check:['inspection','任务待核对；保留原始状态，不自动重发。'],expired:['inspection','任务期限已到；不代表原生工作已取消。'],stopped:['none','Bus 已停止追踪；不代表原生工作已取消。']};
+ const selected=rows.slice(start,start+limit),items=selected.map(t=>({taskId:t.taskId,connectionId:t.connectionId,initiator:t.initiator,executor:t.executor,phase:t.phase,revision:t.revision,deadline:t.deadline,questionId:t.questionId,deliveryId:t.deliveryId,currentMessageId:t.currentMessageId,businessVerdict:t.businessVerdict,lastError:t.lastError?.slice(0,256),pendingActions:{total:actions.filter(a=>a.request.taskId===t.taskId&&a.phase!=='committed').length,items:actions.filter(a=>a.request.taskId===t.taskId&&a.phase!=='committed').slice(0,10).map(a=>({operationId:a.request.operationId,kind:a.request.kind,phase:a.phase,errorCode:a.errorCode?.slice(0,128)}))},remaining:{executions:6-t.executions,questions:3-t.questions},display:{waitingFor:descriptions[t.phase][0],summary:descriptions[t.phase][1]}}));
+ return {items,total:rows.length,nextCursor:start+items.length<rows.length?items.at(-1)!.taskId:null};
+}

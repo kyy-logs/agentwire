@@ -24,7 +24,7 @@ import {LocalBus} from './bus.ts';
 import {realClock} from './model.ts';
 import type {AgentAdapter,AgentBinding,Clock} from './model.ts';
 import {createObserver} from './observer.ts';
-import {statusPage} from './status.ts';
+import {statusPage,collaborationPage} from './status.ts';
 import {FileLifecycleStore} from './lifecycle/store.ts';
 import {LifecycleProcessor} from './lifecycle/processor.ts';
 import {randomUUID,createHash} from 'node:crypto';
@@ -59,11 +59,11 @@ export async function startMain(root:string,options:MainOptions={}){
       if(request.op==='accept'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.accept(p);await log('accepted',{messageId:data.message.messageId,state:data.state});requestWork();await recordTiming(root,{stage:'admission_committed',messageId:data.message.messageId,taskId:data.message.taskId,state:data.state,durationsMs:{admissionMs:performance.now()-admissionStarted}});}
       else if(request.op==='collaboration-open'){await admissionGuard();if(storageError)throw Error('storage_requires_check');if(!bus.collaboration)throw Error('collaboration_service_upgrade_required');if(Object.keys(p).some(k=>!['input','actor'].includes(k)))throw Error('invalid_input');data=await bus.serial(()=>bus!.collaboration!.openOne(p.input,p.actor));requestWork();}
       else if(request.op==='collaboration-action'){await admissionGuard();if(storageError)throw Error('storage_requires_check');if(!bus.collaboration)throw Error('collaboration_service_upgrade_required');data=await bus.serial(()=>bus!.collaboration!.submitActionOne(p));requestWork();}
-      else if(request.op==='collaboration-status'){if(!bus.collaboration)throw Error('collaboration_service_upgrade_required');data={items:(await bus.collaboration.store.listTasks()).slice(0,50).map(t=>({taskId:t.taskId,phase:t.phase,revision:t.revision})),nextCursor:null};}
+      else if(request.op==='collaboration-status'){if(!bus.collaboration)throw Error('collaboration_service_upgrade_required');data=collaborationPage(await bus.collaboration.store.listTasks(),p,await bus.collaboration.store.listActions());}
       else if(request.op==='reply-current'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.replyCurrent(p);await log('accepted',{messageId:data.message.messageId,state:data.state});requestWork();await recordTiming(root,{stage:'admission_committed',messageId:data.message.messageId,taskId:data.message.taskId,state:data.state,durationsMs:{admissionMs:performance.now()-admissionStarted}});}
       else if(request.op==='wake'){requestWork();data={status:'wake_requested'};}
       else if(request.op==='bind'){await admissionGuard();data=await bus.bind(p);}
-      else if(request.op==='status'){data=statusPage(await bus.status(),p,bus.clock.now());for(const item of data.items){if(item.activeAttemptId){const intent=await bus.nativeDispatcher?.store.get(item.activeAttemptId);if(intent)item.native={attemptId:intent.attemptId,transportId:intent.transportId,connectionId:intent.connectionId,phase:intent.phase,nativeExecutionId:intent.nativeExecutionId,errorCode:intent.errorCode};}}}
+      else if(request.op==='status'){data=statusPage(await bus.status(),p,bus.clock.now());if(bus.collaboration)data.collaboration=collaborationPage(await bus.collaboration.store.listTasks(),{taskId:p.taskId,limit:p.limit},await bus.collaboration.store.listActions());for(const item of data.items){if(item.activeAttemptId){const intent=await bus.nativeDispatcher?.store.get(item.activeAttemptId);if(intent)item.native={attemptId:intent.attemptId,transportId:intent.transportId,connectionId:intent.connectionId,phase:intent.phase,nativeExecutionId:intent.nativeExecutionId,errorCode:intent.errorCode};}}}
       else if(request.op==='check')data=await bus.check(p.messageId);
       else if(request.op==='stop'){await bus.stop(p.taskId);data={taskId:p.taskId,status:'bus_stopped',nativeAgentCancelled:false};}
       else if(request.op==='health')data={instanceId,pid:process.pid,stateRoot:root,status:storageError?'storage_requires_check':'running',capabilities:{structuredCollaboration:bus.collaboration?1:0},bindings:[...bus.bindings.values()],lifecycle:await lifecycle?.health()};
