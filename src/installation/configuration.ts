@@ -1,4 +1,4 @@
-import {readFile,mkdir,unlink} from 'node:fs/promises';
+import {readFile,readdir,mkdir,unlink} from 'node:fs/promises';
 import {execFile} from 'node:child_process';import {promisify} from 'node:util';import os from 'node:os';import path from 'node:path';import {randomUUID} from 'node:crypto';
 import {assertId} from '../model.ts';import {hash,optional,safePath,atomicBytes,jsonBytes,resolveLayout,withInstallLock} from './paths.ts';import type {InstallContext,SetupPlan,Provider} from './model.ts';
 export type PathStore={get:()=>Promise<string>;set:(value:string)=>Promise<void>};
@@ -83,27 +83,67 @@ async function applyConfigurationOne(c:InstallContext,id:string,options:Options=
 export async function rollbackConfiguration(c:InstallContext,id:string,options:Options={}):Promise<SetupPlan>{
  return withInstallLock(c,()=>rollbackConfigurationOne(c,id,options));
 }
+/** A repair may have observed already-removed predecessor Hooks. Its completed
+ * rollback is evidence for those omissions, not permission to ignore new edits.
+ * Derive this from existing journals so interrupted legacy uninstalls can resume. */
+async function restoredHookSnapshot(c:InstallContext,id:string,target:string):Promise<Record<string,unknown[]>|undefined>{
+ const directory=path.join(resolveLayout(c).install,'configuration'),names=await readdir(directory,{withFileTypes:true});
+ if(names.length>512)throw Error('configuration_ownership_limit');
+ const candidates:Entry[]=[];
+ for(const name of names){
+  if(!name.isDirectory())continue;
+  // A preview stages bytes before its journal exists. That unfinished directory
+  // has never registered an operation and cannot prove or invalidate lineage.
+  const journal=path.join(operationDir(c,name.name),'operation.json');await safePath(c.installRoot,journal);
+  if(!await optional(journal))continue;const next=await load(c,name.name);
+  if(next.previousOwners?.[target]?.operationId!==id||!next.appliedTargets.includes(target)||!next.rolledBackTargets.includes(target))continue;
+  const entry=next.entries.find(e=>e.target===target&&e.kind==='hook');if(entry)candidates.push(entry);
+ }
+ // Multiple successor histories cannot establish which omission was restored.
+ if(candidates.length!==1)return;
+ const entry=candidates[0];if(entry.before===null)return;
+ const bytes=await readFile(entry.originalFile);if(hash(bytes)!==entry.before)throw Error('backup_mismatch');
+ if(hash(await readFile(entry.stagedFile))!==entry.after)throw Error('staging_hash_mismatch');
+ const value=JSON.parse(bytes.toString());return value.hooks||{};
+}
 async function rollbackConfigurationOne(c:InstallContext,id:string,options:Options={}):Promise<SetupPlan>{
  const pathStore=options.pathStore||registry(c),op=await load(c,id),owner=await owned(c);if(op.status==='rolled_back')return op;
  // Precompute all removals first: changed owned content must not cause a partial rollback.
  const actions:{entry:Entry;current:Buffer|undefined;restore:Buffer|undefined}[]=[];
- for(const e of op.entries){if(op.rolledBackTargets.includes(e.target))continue;const current=e.kind==='path'?Buffer.from(await pathStore.get()):await optional(e.target);const h=current?hash(current):null;if(!op.appliedTargets.includes(e.target)&&owner.targets[e.target]?.operationId!==id){if(h!==e.before)throw Error('configuration_changed_requires_review');continue;}if(h===e.before){actions.push({entry:e,current,restore:current});continue;}let restore:Buffer|undefined;
+ for(const e of op.entries){if(op.rolledBackTargets.includes(e.target))continue;
+ // Overlapping historical operations can retain appliedTargets after another
+ // rollback released ownership. Such files are no longer ours to mutate.
+ if(op.appliedTargets.includes(e.target)&&!owner.targets[e.target])continue;
+ const current=e.kind==='path'?Buffer.from(await pathStore.get()):await optional(e.target);const h=current?hash(current):null;if(!op.appliedTargets.includes(e.target)&&owner.targets[e.target]?.operationId!==id){if(h!==e.before)throw Error('configuration_changed_requires_review');continue;}if(h===e.before){actions.push({entry:e,current,restore:current});continue;}let restore:Buffer|undefined;
  if(h===e.after){restore=e.before===null?undefined:await readFile(e.originalFile);if(restore&&hash(restore)!==e.before)throw Error('backup_mismatch');}
  else if(e.kind==='path'){const bin=resolveLayout(c).bin;restore=Buffer.from((current?.toString()||'').split(';').filter(x=>!x||path.resolve(x).toLowerCase()!==bin.toLowerCase()).join(';'));}
  else if(e.kind==='hook'&&current){
   const value=JSON.parse(current.toString()),original=e.before===null?undefined:await readFile(e.originalFile);if(original&&hash(original)!==e.before)throw Error('backup_mismatch');
   const prior=original?JSON.parse(original.toString()).hooks||{}:{},previousOwner=op.previousOwners?.[e.target];
   const previousGroups=previousOwner?(await load(c,previousOwner.operationId)).entries.find(entry=>entry.target===e.target)?.groups||{}:{};
+  let snapshot:Promise<Record<string,unknown[]>|undefined>|undefined;
   for(const [event,groups] of Object.entries(e.groups||{})){
-   const actual=value.hooks?.[event];if(!Array.isArray(actual))throw Error('hook_changed_requires_review');
+   let actual=value.hooks?.[event];if(actual!==undefined&&!Array.isArray(actual))throw Error('hook_changed_requires_review');
    for(const group of groups){
-    const matches=actual.map((x:any,i:number)=>same(x,group)?i:-1).filter((i:number)=>i>=0);if(matches.length!==1)throw Error('hook_changed_requires_review');if((prior[event]||[]).some((x:any)=>same(x,group)))continue;
+    const matches=(actual||[]).map((x:any,i:number)=>same(x,group)?i:-1).filter((i:number)=>i>=0);
+    if(matches.length!==1){let proven=false;
+     if(matches.length===0&&owner.targets[e.target]?.operationId===id&&!(actual||[]).some((x:any)=>commands(x)===commands(group))){
+      snapshot??=restoredHookSnapshot(c,id,e.target);const known=await snapshot,old=known?.[event];
+      proven=!!known&&(old===undefined||Array.isArray(old)&&!old.some(x=>same(x,group)||commands(x)===commands(group)));
+     }
+     if(!proven)throw Error('hook_changed_requires_review');
+     if(!actual){value.hooks??={};actual=value.hooks[event]=[];}
+    }
+    if(matches.length&&(prior[event]||[]).some((x:any)=>same(x,group)))continue;
     // Launcher migrations change the command itself. Restore only exact prior
     // owned groups present in this operation's verified backup, never foreign groups.
     const old=(prior[event]||[]).filter((x:any)=>commands(x)===commands(group)||(previousGroups[event]||[]).some((owned:any)=>same(x,owned)));
-    if(old.length>1)throw Error('hook_changed_requires_review');actual.splice(matches[0],1,...old.filter((x:any)=>!actual.some((a:any)=>same(a,x))));
+    if(old.length>1)throw Error('hook_changed_requires_review');const restore=old.filter((x:any)=>!actual.some((a:any)=>same(a,x)));
+    // Even a proven omission must unwind an older launcher generation when
+    // this operation's own verified backup contains that predecessor.
+    if(matches.length)actual.splice(matches[0],1,...restore);else actual.push(...restore);
    }
-   if(!actual.length)delete value.hooks[event];
+   if(actual&&!actual.length)delete value.hooks[event];
   }
   restore=jsonBytes(value);
  }

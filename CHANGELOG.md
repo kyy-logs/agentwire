@@ -2,6 +2,10 @@
 
 ## Unreleased — Agent integrations and local usability (2026-11-20)
 
+- Fix legacy uninstall chains after Hook repairs and launcher migrations. Use
+  verified completed rollback snapshots for known predecessor omissions, preserve
+  already released files, and ignore unregistered interrupted preview directories.
+  Modified/duplicate Hooks and damaged backups still stop rollback for review.
 - Centralize built-in discovery, native identity policies, pairing proof,
   lifecycle metadata, and Adapter/EvidenceReader assembly in `src/agents/`.
   Existing Codex/Claude storage and permission boundaries remain unchanged;

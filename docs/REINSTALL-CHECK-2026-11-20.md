@@ -35,7 +35,24 @@ Read-only inspection found multiple historical configuration operations whose pr
 
 For this authorized cleanup, the failed uninstall result and all original state were retained in the verified backup. Cleanup then removed only exact previously registered AgentWire Hook groups, preserved unrelated settings/Hooks, and copied/hash-verified the remaining installed directories before removing them. The clean installation used the normal installer without weakening its checks.
 
-This was a manual recovery of legacy installation state, **not a product fix or proof that the old uninstall path now works**. A future fix needs a regression case covering a missing predecessor Hook group and must preserve fail-closed behavior for genuinely foreign configuration edits. Fresh-install uninstall was not separately exercised in this run.
+That cleanup was a manual recovery of legacy installation state, **not itself a product fix or proof that the old uninstall path worked**. Fresh-install uninstall was not separately exercised during the original native-window reinstall check.
+
+## Follow-up: bounded legacy-uninstall fix
+
+The subsequent source fix is in `src/installation/configuration.ts`, with ten regression cases in `tests/unit/installation-rollback-omissions.test.ts`.
+
+- `restoredHookSnapshot` accepts a missing predecessor Hook only when one completed successor rollback proves the omission. The before/staged snapshots must match their recorded hashes, and the target must still be owned by that predecessor. It supports existing journals without migrating old state.
+- Launcher-generation rollback restores exact predecessor groups from the operation's verified backup, including when the current generation is absent by proven omission.
+- Applied targets whose ownership was already released are left untouched. Unregistered interrupted preview directories are skipped; malformed registered operations still fail.
+- Same-command modifications, duplicate owned groups, missing proof and damaged snapshots still stop rollback. Foreign settings, Hooks and released Skills are preserved.
+
+Two isolated replays used the verified local backup: the complete 21-operation pre-uninstall history, and its already-interrupted uninstall state. Paths were relocated, credentials redacted, and snapshot hashes recomputed for the isolated fixtures; these are sanitized reproductions, not byte-identical native configuration replays. Both now return exit 0, `phase: uninstalled`, with zero remaining configuration owners. The old source reproduced `hook_changed_requires_review` on the pre-uninstall fixture.
+
+The new regressions also exercise uninstall, repeated uninstall and clean reinstall/uninstall with injected PATH and temporary homes. The current working native installation was not uninstalled again. Original native roundtrip evidence above remains the reinstall check's evidence; these offline checks do not claim a new provider restart or business-code test.
+
+Final offline suite after review: **614 passed, 0 failed, 0 skipped**, using Node's test runner with concurrency 1. The review's additional interrupted-preview case was reproduced failing before its bounded fix.
+
+The fix was installed locally through the standard runtime setup functions after checking zero unfinished, uncertain, native-outstanding or pending-artifact work. A staging source retained the fresh remote installation's unchanged bytes to avoid unrelated CRLF rewrites. Exactly one runtime file changed; the manifest and old file were backed up. Native Hook/Skill configuration, routes, active pointer and connection record hashes remained unchanged, the same connection was preserved, and the Bus resumed running. No new native chat probe was submitted for this uninstall-only update. The development branch contains the fix; no release archive or tag was changed.
 
 ## Evidence handling
 
