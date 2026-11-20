@@ -79,8 +79,9 @@ export class LocalBus {
       if(index>this.policy.maxExecutions)throw new Error('execution_budget_exhausted');
       m={schemaVersion:1,messageId:input.messageId,taskId:p.taskId,replyTo:p.messageId,kind:input.kind,from:input.from,to:p.from,targetSessionId:this.binding(p.from).sessionId,body:input.body,createdAt:this.now(),expiresAt:root.message.expiresAt,executionIndex:index,...(input.kind==='followup'&&root.message.returnMode==='auto'?{returnMode:'auto' as const}:{})};
     }
-    const rootVersion=input.kind==='task'?(input.returnMode==='auto'?this.newAutoWireVersion:'legacy'):(await this.store.get(m.taskId))!.message.schemaVersion===2?'clean-v1':'legacy';
+    const rootVersion=input.kind==='task'?(input.returnMode==='auto'?(structuredInternal?'clean-v1':this.newAutoWireVersion):'legacy'):(await this.store.get(m.taskId))!.message.schemaVersion===2?'clean-v1':'legacy';
     if(rootVersion==='clean-v1'){const sourceSessionId=this.binding(input.from).sessionId;if(input.kind!=='task'){const parent=(await this.store.get(input.replyTo!))!.message;if(parent.schemaVersion!==2)throw Error('wire_version_conflict');m.targetSessionId=parent.sourceSessionId;}m={...m,schemaVersion:2,wireVersion:'clean-v1',sourceSessionId};}
+    if(structuredInternal&&this.collaboration){const t=await this.collaboration.store.getTask(m.taskId);if(t)m.expiresAt=t.deadline;}
     validateMessage(m);let {record}=await this.store.putNew(m);
     if(late){record={...record,late:true,state:'stopped',lastError:'late_reply_no_forward'};await this.update(record);}
     if(input.kind==='reply'&&!late){const parent=(await this.store.get(input.replyTo!))!;parent.state='completed';parent.resultRef=m.messageId;await this.update(parent);}
@@ -134,6 +135,7 @@ export class LocalBus {
       const adapter=this.adapters.get(binding.kind);if(!adapter){r.state='failed';r.lastError='unsupported_adapter';await this.update(r);continue;}
       if(r.message.returnMode==='auto'){r.returnMode='auto';r.dispatchNonce??=randomUUID();}
       if(r.message.schemaVersion===2){if(!this.nativeDispatcher||!this.connectionId){r.state='needs_check';r.lastError='native_dispatch_unavailable';await this.update(r);continue;}r.activeAttemptId=randomUUID();}
+      const collaboration=await this.collaboration?.contextOne(r.message.messageId);
       r.state='submitting';r.attempts++;await this.update(r);
       // The durable submitting write itself is asynchronous. Shutdown/expiry
       // during it must not start a new side effect; no adapter call occurred.
@@ -143,7 +145,7 @@ export class LocalBus {
       const submissionStarted=performance.now(),queueAgeMs=+this.clock.now()-Date.parse(r.message.createdAt);
       let receipt:SubmitResult;
       if(r.message.schemaVersion===2){const intent:DispatchIntent={schemaVersion:1,connectionId:this.connectionId!,provider:binding.kind,targetSessionId:r.message.targetSessionId,sourceSessionId:r.message.sourceSessionId,messageId:r.message.messageId,attemptId:r.activeAttemptId!,transportId:randomUUID(),wireVersion:'clean-v1',bodySha256:digest(r.message.body),createdAt:this.now(),updatedAt:this.now(),phase:'prepared'};
-        receipt=await this.nativeDispatcher!.submit(intent,transportId=>adapter.submit(binding,r.message,{wireVersion:'clean-v1',transportId,returnMode:r.returnMode,dispatchNonce:r.dispatchNonce}),()=>!this.dispatchStopped&&Date.parse(r.message.expiresAt)>+this.clock.now());
+        receipt=await this.nativeDispatcher!.submit(intent,transportId=>adapter.submit(binding,r.message,{wireVersion:'clean-v1',transportId,returnMode:r.returnMode,dispatchNonce:r.dispatchNonce,...(collaboration?{collaboration}:{})}),()=>!this.dispatchStopped&&Date.parse(r.message.expiresAt)>+this.clock.now());
         if(receipt.errorCode==='submit_not_started'){r.attempts--;r.state=this.dispatchStopped?'pending':'expired';r.lastError=receipt.errorCode;await this.update(r);continue;}
       }else try{receipt=await adapter.submit(binding,r.message,r.returnMode==='auto'?{returnMode:'auto',dispatchNonce:r.dispatchNonce}:undefined);}catch{receipt={status:'unknown',retryable:false,errorCode:'adapter_exception'};}
       r.receipt=receipt;r.lastError=receipt.errorCode;

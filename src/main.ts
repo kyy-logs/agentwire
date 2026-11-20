@@ -1,3 +1,5 @@
+import {CollaborationStore} from './collaboration/store.ts';
+import {createNativeActionReader} from './collaboration/native-reader.ts';
 import {createAgentRuntime} from './agents/registry.ts';
 import {recordTiming} from './latency.ts';
 import {reconcilePairStartup} from './pairing/worker.ts';
@@ -54,13 +56,16 @@ export async function startMain(root:string,options:MainOptions={}){
     try{
       let data:any;
       if(request.op==='accept'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.accept(p);await log('accepted',{messageId:data.message.messageId,state:data.state});requestWork();await recordTiming(root,{stage:'admission_committed',messageId:data.message.messageId,taskId:data.message.taskId,state:data.state,durationsMs:{admissionMs:performance.now()-admissionStarted}});}
+      else if(request.op==='collaboration-open'){await admissionGuard();if(storageError)throw Error('storage_requires_check');if(!bus.collaboration)throw Error('collaboration_service_upgrade_required');if(Object.keys(p).some(k=>!['input','actor'].includes(k)))throw Error('invalid_input');data=await bus.serial(()=>bus!.collaboration!.openOne(p.input,p.actor));requestWork();}
+      else if(request.op==='collaboration-action'){await admissionGuard();if(storageError)throw Error('storage_requires_check');if(!bus.collaboration)throw Error('collaboration_service_upgrade_required');data=await bus.serial(()=>bus!.collaboration!.submitActionOne(p));requestWork();}
+      else if(request.op==='collaboration-status'){if(!bus.collaboration)throw Error('collaboration_service_upgrade_required');data={items:(await bus.collaboration.store.listTasks()).slice(0,50).map(t=>({taskId:t.taskId,phase:t.phase,revision:t.revision})),nextCursor:null};}
       else if(request.op==='reply-current'){await admissionGuard();if(storageError)throw new Error('storage_requires_check');data=await bus.replyCurrent(p);await log('accepted',{messageId:data.message.messageId,state:data.state});requestWork();await recordTiming(root,{stage:'admission_committed',messageId:data.message.messageId,taskId:data.message.taskId,state:data.state,durationsMs:{admissionMs:performance.now()-admissionStarted}});}
       else if(request.op==='wake'){requestWork();data={status:'wake_requested'};}
       else if(request.op==='bind'){await admissionGuard();data=await bus.bind(p);}
       else if(request.op==='status'){data=statusPage(await bus.status(),p,bus.clock.now());for(const item of data.items){if(item.activeAttemptId){const intent=await bus.nativeDispatcher?.store.get(item.activeAttemptId);if(intent)item.native={attemptId:intent.attemptId,transportId:intent.transportId,connectionId:intent.connectionId,phase:intent.phase,nativeExecutionId:intent.nativeExecutionId,errorCode:intent.errorCode};}}}
       else if(request.op==='check')data=await bus.check(p.messageId);
       else if(request.op==='stop'){await bus.stop(p.taskId);data={taskId:p.taskId,status:'bus_stopped',nativeAgentCancelled:false};}
-      else if(request.op==='health')data={instanceId,pid:process.pid,stateRoot:root,status:storageError?'storage_requires_check':'running',bindings:[...bus.bindings.values()],lifecycle:await lifecycle?.health()};
+      else if(request.op==='health')data={instanceId,pid:process.pid,stateRoot:root,status:storageError?'storage_requires_check':'running',capabilities:{structuredCollaboration:bus.collaboration?1:0},bindings:[...bus.bindings.values()],lifecycle:await lifecycle?.health()};
       else if(request.op==='diagnostic-health')data={instanceId,pid:process.pid,stateRoot:root,status:storageError||lifecycle?.lastError?'storage_requires_check':'running',bindings:[...bus.bindings.values()],lifecycle:null,diagnosticReadOnly:true};
       else if(request.op==='shutdown'){if(p.instanceId!==instanceId)throw new Error('instance_mismatch');bus.requestShutdown();data={instanceId,status:'closing'};}
       else throw new Error('unknown_operation');
@@ -79,6 +84,7 @@ export async function startMain(root:string,options:MainOptions={}){
     const readers=options.native?.readers||runtime.readers,adapters=options.adapters||runtime.adapters;
     const identities=new IdentityStore(root,clock),dispatcher=new NativeDispatcher(identities,readers);
     bus=new LocalBus({onTiming:event=>recordTiming(root,event),nativeDispatcher:dispatcher,connectionId:options.connectionId,newAutoWireVersion:options.newAutoWireVersion,store:new FileMessageStore(root,clock),bindings,adapters,clock,saveBindings:b=>atomicJson(path.join(root,'bindings.json'),{schemaVersion:1,bindings:b})});
+    if(options.connectionId){const collabStore=new CollaborationStore(root);await collabStore.inspect();bus.enableCollaboration({store:collabStore,proof:createNativeActionReader({home:os.homedir(),launchers:[...(installRoot?[path.join(installRoot,'bin','labus.cmd'),path.join(installRoot,'bin','labus.cmd').replaceAll('\\','/')]:[])]})});}
     const report=await bus.recover();storageError=report.quarantinedFiles.length>0;await log('started',{recovery:report});
     const controlExecution=installRoot?(async(ref:any)=>{const c={installRoot:installRoot!,home:os.homedir(),sourceRoot:installRoot!,nodeExe:process.execPath},id=options.connectionId||path.basename(path.dirname(root));return await isPairControlExecution(c,id,ref)||await isSwitchControlExecution(c,id,ref);}):undefined;
     const nonTaskExecution=installRoot?createNonTaskVerifier({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath},options.connectionId||path.basename(path.dirname(root))):undefined;
@@ -92,7 +98,7 @@ export async function startMain(root:string,options:MainOptions={}){
     // A wake is a hint only: persisted records and native evidence remain authoritative.
     // Keep one drain, retaining a wake arriving during any await in the current cycle.
     let requested=false;
-    const work=async()=>{if(installRoot&&Date.now()-lastStartupScan>=1000){lastStartupScan=Date.now();try{await reconcilePairStartup({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath});}catch{if(!startupErrorLogged){startupErrorLogged=true;await log('pair_startup_monitor_requires_check');}}}if(storageError||closing)return;await admissionGuard();await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();};
+    const work=async()=>{if(installRoot&&Date.now()-lastStartupScan>=1000){lastStartupScan=Date.now();try{await reconcilePairStartup({installRoot,home:os.homedir(),sourceRoot:installRoot,nodeExe:process.execPath});}catch{if(!startupErrorLogged){startupErrorLogged=true;await log('pair_startup_monitor_requires_check');}}}if(storageError||closing)return;await admissionGuard();await bus!.serial(async()=>{await bus!.collaboration?.drainOne();});await lifecycle!.drain();await clean!.drain();if(lifecycle!.lastError){storageError=true;await log('lifecycle_requires_check',{errorCode:lifecycle!.lastError});return;}if(!closing)await bus!.tick();if(!closing)await queue.drain();};
     requestWork=()=>{
       if(interval<=0||closing)return;
       requested=true;if(working)return;working=true;

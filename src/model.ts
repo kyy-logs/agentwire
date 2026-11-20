@@ -9,7 +9,7 @@ export type SubmitResult={status:'accepted'|'rejected'|'unknown';nativeId?:strin
 export type ProbeResult={status:'available'|'offline'|'unsupported'|'unknown';details:string[]};
 export type ReconcileResult={status:'submitted'|'completed'|'not_found'|'unknown';evidenceRef?:string;nativeId?:string};
 export type MessageRecord={activeAttemptId?:string;message:AgentMessage;state:MessageState;attempts:number;updatedAt:string;receipt?:SubmitResult;submittedAt?:string;resultDeadlineAt?:string;resultRef?:string;late?:boolean;lastError?:string;nextAttemptAt?:string;stoppedAt?:string;returnMode?:'manual'|'auto';dispatchNonce?:string;completion?:{nativeOutcome:'response_ended'|'error'|'interrupted';businessVerdict:'unverified';eventKey:string;artifactRef?:string;sha256?:string;truncated:boolean};reminder?:{messageId:string;attemptedAt:string;receipt:SubmitResult}};
-export type SubmitOptions={wireVersion?:'legacy'|'clean-v1';transportId?:string;reminderFor?:string;returnMode?:'manual'|'auto';dispatchNonce?:string};
+export type SubmitOptions={collaboration?:{taskId:string;revision:number;phase:string;questionId?:string;deliveryId?:string};wireVersion?:'legacy'|'clean-v1';transportId?:string;reminderFor?:string;returnMode?:'manual'|'auto';dispatchNonce?:string};
 export type RecoveryReport={needsCheckIds:string[];quarantinedFiles:string[];repairedTaskIds:string[];orphanTemporaryFiles?:string[]};
 export type Clock={now():Date};
 export type ChildRunner=(exe:string,args:readonly string[],options:{timeoutMs:number})=>Promise<{exitCode:number|null;stdout:string;stderr:string;timedOut:boolean}>;
