@@ -1,3 +1,4 @@
+import {CollaborationStore} from '../collaboration/store.ts';
 import {inspectCollaborationWork} from '../collaboration/recovery.ts';
 import path from 'node:path';
 import net from 'node:net';
@@ -42,6 +43,17 @@ export async function inspectConnectionWork(c:InstallContext,id:string){
   const {observedAt,...semantic}=h;if(digest(JSON.stringify(semantic))+'.json'!==e.name)throw Error('connection_storage_requires_check');hints.push(h);
  }
  const nativeEnded=async(r:any,intent?:any)=>{
+  // A structured turn can end without an outgoing reply. Its separate business
+  // ledger remains needs_check until explicitly stopped; never fabricate a reply chain.
+  if(r.message.schemaVersion===2&&r.returnMode==='auto'&&r.activeAttemptId){
+   const task=await new CollaborationStore(root).getTask(r.message.taskId),i=intent||await native.get(r.activeAttemptId);
+   if(task&&task.connectionId===id&&['needs_check','stopped','expired'].includes(task.phase)&&i?.phase==='terminal'&&i.connectionId===id&&i.messageId===r.message.messageId&&i.provider===r.message.to&&i.targetSessionId===r.message.targetSessionId&&i.sourceSessionId===r.message.sourceSessionId&&i.nativeExecutionId&&i.evidenceRef){
+    const saved=await life.getResult(r.message.messageId),ref={provider:i.provider,sessionId:i.targetSessionId,nativeExecutionId:i.nativeExecutionId},execution=await life.getExecution(ref);
+    const exact=hints.filter(h=>h.provider===ref.provider&&h.sessionId===ref.sessionId&&h.nativeExecutionId===ref.nativeExecutionId);
+    if(saved&&saved.ref.provider===ref.provider&&saved.ref.sessionId===ref.sessionId&&saved.ref.nativeExecutionId===ref.nativeExecutionId&&execution?.phase==='applied'&&execution.reason==='collaboration_terminal_without_reply'&&execution.messageId===r.message.messageId&&execution.dispatchNonce===r.dispatchNonce&&!execution.replyMessageId&&execution.terminalEventKey===saved.terminalEventKey&&!await life.hasConflict(ref)&&exact.length===1&&[exact[0].backgroundPending,exact[0].continuation,exact[0].incomplete].every(v=>v===false)&&saved.terminalEventKey===eventKey(ref,exact[0].phase)&&Date.parse(exact[0].observedAt)>=Date.parse(i.createdAt))return true;
+   }
+  }
+
   if(r.message.schemaVersion!==2||r.returnMode!=='auto'||!['expired','stopped','failed'].includes(r.state)||!r.activeAttemptId||r.receipt?.status!=='accepted')return false;
   const i=intent||await native.get(r.activeAttemptId);
   if(!i||i.phase!=='mapped'||i.attemptId!==r.activeAttemptId||i.connectionId!==id||i.messageId!==r.message.messageId||i.provider!==r.message.to||i.targetSessionId!==r.message.targetSessionId||i.sourceSessionId!==r.message.sourceSessionId||!i.nativeExecutionId||!i.evidenceRef||r.receipt.evidenceRef!==i.evidenceRef)return false;

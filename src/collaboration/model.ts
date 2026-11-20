@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {assertId} from '../model.ts';
+import {assertId,assertAgent} from '../model.ts';
 import type {Provider} from '../native/model.ts';
 import type {ExecutionRef,CapturedResult} from '../lifecycle/model.ts';
 import type {MessageInput} from '../model.ts';
@@ -22,3 +22,8 @@ if(r.kind==='answer'){assertId(r.questionId!);}else if(r.questionId!==undefined)
 if(['accept','revise'].includes(r.kind)){assertId(r.deliveryId!);}else if(r.deliveryId!==undefined)throw Error('invalid_collaboration_delivery');}
 export function actionDigest(r:ActionRequest){validateAction(r);return createHash('sha256').update(JSON.stringify([r.operationId,r.taskId,r.actor.provider,r.actor.sessionId,r.kind,r.expectedRevision,r.questionId??null,r.deliveryId??null,r.body??null])).digest('hex');}
 export function derivedId(s:string){const h=createHash('sha256').update('agentwire:collaboration:'+s).digest('hex');return h.slice(0,8)+'-'+h.slice(8,12)+'-5'+h.slice(13,16)+'-a'+h.slice(17,20)+'-'+h.slice(20,32);}
+
+export function validateInitialMessage(i:MessageInput){
+ if(!i||Object.keys(i).some(k=>!['messageId','kind','from','to','body','returnMode'].includes(k))||i.kind!=='task'||i.returnMode!=='auto')throw Error('invalid_collaboration_task');
+ assertId(i.messageId);assertAgent(i.from);assertAgent(i.to!);if(i.from===i.to||typeof i.body!=='string'||!i.body.trim()||Buffer.byteLength(i.body)>65536)throw Error('invalid_collaboration_task');
+}

@@ -2,6 +2,7 @@ import {actionDigest,sameActor} from './model.ts';
 import type {ActionRequest,ActionEvidence,TaskRecord} from './model.ts';
 import type {DispatchIntent} from '../native/model.ts';
 function argv(s:string):string[]|undefined{
+ if(/^&\s+/.test(s))s=s.replace(/^&\s+/,'');
  if(/[;&|\r\n\x60$<>]/.test(s))return;
  const out:string[]=[];let i=0;while(i<s.length){while(s[i]===' ')i++;if(i===s.length)break;const q=s[i]==='"'?'"':s[i]==="'"?"'":undefined;let t='';if(q){i++;while(i<s.length&&s[i]!==q)t+=s[i++];if(s[i++]!==q||i<s.length&&s[i]!==' ')return;}else{while(i<s.length&&s[i]!==' '){if(/["']/.test(s[i]))return;t+=s[i++];}}out.push(t);}return out;
 }
@@ -57,6 +58,8 @@ export function verifyActionOwnership(task:TaskRecord,r:ActionRequest,e:ActionEv
  const executor=['question','deliver'].includes(r.kind),actor=executor?task.executor:task.initiator;
  if(!sameActor(r.actor,actor))throw Error('collaboration_role_mismatch');
  if(e.status!=='verified'||e.requestSha256!==actionDigest(r)||!sameActor(e.ref,r.actor))throw Error('collaboration_action_unverified');
- const matches=inputs.filter(i=>['mapped','terminal','reply_committed','delivered'].includes(i.phase)&&i.provider===r.actor.provider&&i.targetSessionId===r.actor.sessionId&&i.nativeExecutionId===e.ref.nativeExecutionId&&i.messageId===task.currentMessageId);
+ const all=inputs.filter(i=>i.provider===r.actor.provider&&i.targetSessionId===r.actor.sessionId&&i.nativeExecutionId===e.ref.nativeExecutionId);
+ if(all.some(i=>i.messageId!==task.currentMessageId||!['mapped','terminal','reply_committed','delivered'].includes(i.phase)))throw Error('collaboration_execution_mismatch');
+ const matches=all;
  if(matches.length!==1&&!(matches.length===0&&!executor&&e.human===true))throw Error('collaboration_execution_mismatch');return e.ref;
 }

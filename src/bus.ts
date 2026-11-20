@@ -191,6 +191,6 @@ export class LocalBus {
     return r;
   }
   async check(id:string){return this.serial(async()=>{assertId(id);const r=await this.store.get(id);if(!r)throw new Error('message_not_found');if(['needs_check','submitted'].includes(r.state)||expiredReplyCheck(r))await this.reconcileRecord(r,true);return r;});}
-  async stop(taskId:string){return this.serial(async()=>{assertId(taskId);const family=(await this.store.list()).filter(r=>r.message.taskId===taskId);if(!family.length)throw new Error('task_not_found');const root=family.find(r=>r.message.messageId===taskId);if(!root)throw new Error('missing_root');await this.collaboration?.stopOne(taskId);root.stoppedAt??=this.now();await this.update(root);for(const r of family)if(!terminal.has(r.state)){r.state='stopped';r.lastError='bus_stopped_native_agent_not_cancelled';await this.update(r);}});}
+  async stop(taskId:string){return this.serial(async()=>{assertId(taskId);const family=(await this.store.list()).filter(r=>r.message.taskId===taskId);if(!family.length){if(await this.collaboration?.store.getTask(taskId)){await this.collaboration!.stopOne(taskId);return;}throw new Error('task_not_found');}const root=family.find(r=>r.message.messageId===taskId);if(!root)throw new Error('missing_root');await this.collaboration?.stopOne(taskId);root.stoppedAt??=this.now();await this.update(root);for(const r of family)if(!terminal.has(r.state)){r.state='stopped';r.lastError='bus_stopped_native_agent_not_cancelled';await this.update(r);}});}
   async recover(){return this.serial(()=>this.store.recover(this.clock.now()));}
 }

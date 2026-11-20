@@ -25,7 +25,7 @@ Stop 只表示一个回合结束。没有显式 question/deliver 的结构化执
 
 动作首先返回 pending_verification，随后后台核对原生工具结果的请求摘要、工具调用、精确会话和回合，再推进状态。执行方仅可在绑定任务执行回合提问/交付；发起方仅可在该任务的问题/报告接收回合操作，或通过经验证的人工来源操作。模型填写的 ID 不是权限证明。原生工具记录缺失、冲突、部分写入或超界一律不推进。
 
-当前支持形态：Claude 主会话 Bash 单条已安装 launcher 命令，Codex 主会话 exec 中精确的 `text((await tools.exec_command(<JSON字面量对象>)).output);`。动作命令必须显式包含本端 sessionId，不接受任意 JS、shell 链或外部脚本代理。独立证据读取器限单文件16MiB、单行2MiB、目录2万项；超出限制保持未核验，不切到模糊匹配。现有 reader/适配器协议不变。
+当前支持形态：Claude 主会话 Bash 单条已安装 launcher 命令，Codex 主会话 exec 中精确的 `text((await tools.exec_command(<JSON字面量对象>)).output);`。动作命令必须显式包含本端 sessionId，Windows PowerShell 可在命令起始使用单个 & 调用运算符；不接受任意 JS、shell 链或外部脚本代理。独立证据读取器限单文件16MiB、单行2MiB、目录2万项；超出限制保持未核验，不切到模糊匹配。现有 reader/适配器协议不变。
 
 文件账本位于连接 state/collaboration/tasks 与 actions。intent 和 terminal 两个 checkpoint 分别先存确定性动作/消息，再提交任务版本；重启保留原 messageId，不重复扣预算。原始 TTL=30分钟，最多3个问题、6次执行（回答及修改会消耗），不会随对话刷新。超时不等于原生取消。等待答案、等待验收与未完成动作均阻止连接切换和卸载；需要用户明确处置，禁止自动删除保护记录。
 

@@ -27,3 +27,5 @@ test('Windows oversized argv is definitively rejected before launching a process
     const r=await a.submit(binding,{...message(),body});assert.equal(r.status,'rejected');assert.equal(r.errorCode,'command_line_too_long');assert.equal(r.retryable,false);assert.equal(calls,0);
   }
 });
+
+test('native schema2 Codex adapter preserves structured task question and report instructions',async()=>{const sent:string[]=[];const app:any={async call(_method:string,p:any){sent.push(p.input[0].text);return {queuedSubmission:{id:randomUUID(),clientUserMessageId:p.clientUserMessageId}};}};const adapter=new CodexAdapter(async()=>{throw Error('unexpected child');},{exe:'codex',appServer:app});for(const phase of ['working','waiting_answer','waiting_acceptance']){const m:any={...message(),schemaVersion:2,wireVersion:'clean-v1',sourceSessionId:randomUUID()};await adapter.submit(binding,m,{transportId:randomUUID(),collaboration:{taskId:m.taskId,revision:0,phase}});}assert.match(sent[0],/deliver/);assert.match(sent[1],/answer/);assert.doesNotMatch(sent[1],/无需确认或回信/);assert.match(sent[2],/accept/);});

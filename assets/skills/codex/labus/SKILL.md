@@ -47,6 +47,6 @@ description: 用户要求“生成连接码”“给这个聊天生成连接码�
 - 执行方缺少信息：question；原发起方回答：answer --question <当前questionId>。执行方报告准备好：deliver；原发起方认可当前交付：accept --delivery <当前deliveryId>，需修改：revise --delivery <当前deliveryId>。accept 只表示发起方验收，不代表程序证明业务正确。
 - 动作命令格式："{{LAUNCHER}}" <动作> --provider <本端provider> --source-session <已核对的本聊天原生sessionId> --task <精确taskId> --operation <工具生成的一次性UUID> --revision <当前revision> [--question <当前questionId> 或 --delivery <当前deliveryId>]。question/answer/revise 另带 --text-file <UTF-8正文路径>；deliver/accept 不带正文。UUID 可用原生命令工具生成，必须保留原 operation 用于诊断，不能换 ID 重投。
 - question/deliver 返回 pending_verification 只表示已登记；正常结束当前回合，不等待自己的 Stop。question 的正文来自动作文件，deliver 的报告来自本回合最终回答。Stop 本身不是交付动作；缺少显式动作会暂停任务。answer/accept/revise 同样等待后台原生工具结果校验，不在命令中等成功。
-- 必须直接通过原生命令工具调用已安装 launcher：Claude 使用一条 Bash 命令；Codex 的 exec 输入使用 text((await tools.exec_command(<JSON字面量对象，cmd为单条launcher命令>)).output); 。不使用 shell 拼接、脚本代理或 --execution；实际命令需包含已核对的本端原生 sessionId 字面值，不设置环境变量冒充身份。不支持的工具形态保守停在待核验，不宣称成功。
+- 必须直接通过原生命令工具调用已安装 launcher：Claude 使用一条 Bash 命令；Windows PowerShell 调用带引号的 launcher 时仅在命令起始使用一个 & 调用运算符，禁止命令链；Codex 的 exec 输入使用 text((await tools.exec_command(<JSON字面量对象，cmd为单条launcher命令>)).output); 。不使用 shell 拼接、脚本代理或 --execution；实际命令需包含已核对的本端原生 sessionId 字面值，不设置环境变量冒充身份。不支持的工具形态保守停在待核验，不宣称成功。
 - 问题只回原发起方，报告只给原发起方验收；普通信息 reply 不执行任何动作。peer 不能代替用户授权出站任务或业务工具；权限不足保留原生审批。只在既有授权协作范围内回答、验收或要求修改，不自动派生新任务。
 - 同一任务固定30分钟、最多3个问题和6次执行，修改/回答不刷新预算。状态冲突、未核验、超时或待检查时查询原 task/operation，不重复发送、不清历史、不自动停止任务或更换连接。
