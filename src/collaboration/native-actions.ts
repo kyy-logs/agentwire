@@ -25,11 +25,18 @@ function receipt(output:any,r:ActionRequest):boolean{
  return output.split(/\r?\n/).some(line=>{try{return receipt(JSON.parse(line),r);}catch{return false;}});
 }
 function result(candidates:ActionEvidence[]):ActionEvidence{return candidates.length>1?{status:'conflict',errorCode:'multiple_native_executions'}:candidates[0]??{status:'pending'};}
+export function codexActionCalls(rows:any[],r:ActionRequest,launchers:string[]){
+ return rows.map(x=>x.type==='response_item'?x.payload:x.payload??x).filter(call=>{
+  if(call.type!==undefined&&call.type!=='custom_tool_call'||call.name!=='exec'||typeof call.input!=='string')return false;
+  const m=/^text\(\(await tools\.exec_command\((\{[\s\S]*\})\)\)\.output\);?$/.exec(call.input.trim());if(!m)return false;
+  try{return matches(JSON.parse(m[1]).cmd,r,launchers);}catch{return false;}
+ });
+}
 export function proveCodexAction(rows:any[],r:ActionRequest,launchers:string[]):ActionEvidence{
  if(rows.length>100000)return {status:'limit'};const metas=rows.filter(x=>x.type==='session_meta');if(metas.length!==1||metas[0].payload?.id!==r.actor.sessionId||!['vscode','cli'].includes(metas[0].payload.source))return {status:'unavailable'};
  const all=rows.map(x=>x.type==='response_item'?x.payload:x.payload??x),verified:ActionEvidence[]=[];let pending=false;
- for(const call of all){if(call.type!==undefined&&call.type!=='custom_tool_call'||call.name!=='exec'||typeof call.input!=='string')continue;
- const m=/^text\(\(await tools\.exec_command\((\{[\s\S]*\})\)\)\.output\);?$/.exec(call.input);if(!m)continue;let cmd;try{cmd=JSON.parse(m[1]).cmd;}catch{continue;}if(!matches(cmd,r,launchers))continue;
+ const calls=codexActionCalls(rows,r,launchers);if(calls.length>1)return {status:'conflict',errorCode:'multiple_native_executions'};
+ for(const call of calls){
  const turn=call.internal_chat_message_metadata_passthrough?.turn_id;if(typeof turn!=='string')continue;
  const outputs=all.filter(x=>x.call_id===call.call_id&&x!==call&&x.output!==undefined);
  if(!outputs.length){pending=true;continue;}if(outputs.length!==1||outputs[0].internal_chat_message_metadata_passthrough?.turn_id!==turn||!receipt(outputs[0].output,r))continue;

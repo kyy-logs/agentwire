@@ -77,3 +77,17 @@ test('ambiguous native input mapping and wrong actor role fail closed',()=>{
 
 test('initiator human proof cannot borrow a native execution already mapped to another task',()=>{const f=fixture(),r:any={...f.request,kind:'accept',body:undefined,deliveryId:randomUUID()},e:any={status:'verified',ref:{...f.actor,nativeExecutionId:f.turn},human:true,requestSha256:actionDigest(r),evidenceRef:'fixture'},task:any={initiator:f.actor,executor:{provider:'claude',sessionId:randomUUID()},currentMessageId:randomUUID()};const other:any={phase:'mapped',provider:f.actor.provider,targetSessionId:f.actor.sessionId,nativeExecutionId:f.turn,messageId:randomUUID()};assert.throws(()=>verifyActionOwnership(task,r,e,[other]),/collaboration_execution_mismatch/);assert.equal(verifyActionOwnership(task,r,e,[]).nativeExecutionId,f.turn);const own={...other,messageId:task.currentMessageId};assert.throws(()=>verifyActionOwnership(task,r,e,[own,other]),/collaboration_execution_mismatch/);});
 test('a single PowerShell call operator is supported but shell chaining still cannot prove an action',()=>{const f=fixture();assert.equal(proveCodexAction(codexRows({...f,command:'& '+f.command}),f.request,[launcher]).status,'verified');for(const command of ['&& '+f.command,'& '+f.command+' & echo unsafe'])assert.notEqual(proveCodexAction(codexRows({...f,command}),f.request,[launcher]).status,'verified');});
+
+test('a separate UUID preparation tool does not invalidate a literal Claude action',()=>{
+ const f=fixture('claude'),rows=claudeRows(f),prepare=JSON.parse(JSON.stringify(rows[1])),output=JSON.parse(JSON.stringify(rows[2]));
+ prepare.uuid=randomUUID();prepare.parentUuid=rows[0].uuid;
+ prepare.message.content=[{type:'tool_use',id:randomUUID(),name:'Bash',input:{command:'powershell.exe -NoProfile -Command "[guid]::NewGuid().ToString()"'}}];
+ output.uuid=randomUUID();output.parentUuid=prepare.uuid;output.sourceToolAssistantUUID=prepare.uuid;
+ output.message.content=[{type:'tool_result',tool_use_id:prepare.message.content[0].id,content:f.request.operationId}];
+ rows[1].parentUuid=output.uuid;rows.splice(1,0,prepare,output);
+ assert.equal(proveClaudeAction(rows,f.request,[launcher]).status,'verified');
+});
+test('a UUID preparation chain with the exact successful CLI receipt still cannot prove a Claude action',()=>{
+ const f=fixture('claude'),command='UUID=$(powershell.exe -NoProfile -Command "[guid]::NewGuid().ToString()"); echo operation; '+f.command.replace(f.request.operationId,'"$UUID"');
+ assert.notEqual(proveClaudeAction(claudeRows({...f,command}),f.request,[launcher]).status,'verified');
+});

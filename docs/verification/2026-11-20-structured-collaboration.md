@@ -100,3 +100,17 @@ node --experimental-strip-types --test --test-concurrency=1 tests/unit/*.test.ts
 下一步应准备具体安装差异，经安装授权后更新运行时和两端 Skill，再在真实双方聊天中分别验证提问、回答、交付、验收、修改和无回声。若厂商审批阻止动作，保留等待或拒绝，不提高 peer 权限，不代批。本轮离线通过不替代这一步，也不证明实际业务开发正确。
 
 使用说明见 [结构化协作](../structured-collaboration.md)；设计与逐步实现计划见 [设计](../superpowers/specs/2026-11-20-structured-collaboration-design.md)、[计划](../superpowers/plans/2026-11-20-structured-collaboration-plan.md)。
+
+## 后续原窗口验收与读取器修复（2026-11-21）
+
+后续安装授权后，已完成双方真实原窗口结构化协作验收：
+
+- Codex 发起、Claude 执行：question → answer → deliver → revise → deliver → accept，任务最终 completed。
+- Claude 发起、Codex 执行：question → answer → deliver → accept；算术样例 17×19=323，任务最终 completed，accept 原生工具证据 verified。
+- 修复后反向任务验收后追加15秒观察，同任务消息数和投递次数不增加，没有自动回声。这是有界样例验证，不是所有未来场景无循环的证明。
+
+真实记录暴露并修复了两点：两端 Skill 要求 UUID 准备与动作提交拆成独立工具调用；Codex 原生动作读取支持同会话续接文件、外层空白及超过原16MiB限制的有界扫描。保持精确会话/回合归属，拒绝跨文件拼接调用结果、重复调用、坏收据与扫描中变化的文件，不通过降低身份校验接通动作。
+
+修复后的完整离线回归为672/672通过、fail=0，新增覆盖续接记录、行/文件/合计扫描上限、重复结果、缺失结果和JSON转义下的重复动作。早期异常任务保留失败及过期记录，新的成功样例不覆盖旧失败。原生审批保持生效。
+
+本地验收过程中另恢复了意外缺失的Claude Hook并修正临时观察器固定PID的问题；不提交用户配置、聊天记录或会话标识。此处不证明导致Hook缺失或服务退出的外部原因，也不将机制验收扩大为真实业务开发的正确性保证。
