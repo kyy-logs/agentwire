@@ -91,3 +91,44 @@ test('a UUID preparation chain with the exact successful CLI receipt still canno
  const f=fixture('claude'),command='UUID=$(powershell.exe -NoProfile -Command "[guid]::NewGuid().ToString()"); echo operation; '+f.command.replace(f.request.operationId,'"$UUID"');
  assert.notEqual(proveClaudeAction(claudeRows({...f,command}),f.request,[launcher]).status,'verified');
 });
+
+function withArguments(f:ReturnType<typeof fixture>,args:string){const rows=codexRows(f);rows[2].payload.input='text((await tools.exec_command('+args+')).output);';return rows;}
+const singleLiteral=(s:string)=>"'"+s.replaceAll('\\','\\\\').replaceAll("'","\\'")+"'";
+test('Codex static object arguments accept unquoted keys and single-quoted command without replay',()=>{
+ const f=fixture(),args='{cmd:'+singleLiteral('& '+f.command)+',sandbox_permissions:"require_escalated",justification:"exact original task",max_output_tokens:2000}';
+ const proof=proveCodexAction(withArguments(f,args),f.request,[launcher]);assert.equal(proof.status,'verified');
+ if(proof.status==='verified')assert.equal(proof.ref.nativeExecutionId,f.turn);
+});
+test('static argument strings decode escapes and permit surrounding formatting and trailing comma',()=>{
+ const f=fixture(),args="{\n cmd: "+singleLiteral(f.command)+", justification: 'review\\'s \\\\ path \\u4e2d', login: false, tty: true, yield_time_ms: 1e3, max_output_tokens: 2000,\n}";
+ assert.equal(proveCodexAction(withArguments(f,args),f.request,[launcher]).status,'verified');
+});
+test('strict JSON arguments with a documented array option remain supported',()=>{
+ const f=fixture();assert.equal(proveCodexAction(withArguments(f,JSON.stringify({cmd:f.command,prefix_rule:['node']})),f.request,[launcher]).status,'verified');
+});
+test('a JSON call and static object call for one operation still conflict',()=>{
+ const f=fixture(),second=withArguments({...f,turn:randomUUID()},'{cmd:'+singleLiteral(f.command)+'}');
+ assert.equal(proveCodexAction([...codexRows(f),...second.slice(1)],f.request,[launcher]).status,'conflict');
+});
+test('static object proof still requires the exact receipt, actor, turn and launcher',()=>{
+ const f=fixture(),args='{cmd:'+singleLiteral(f.command)+'}';
+ for(const mutate of [(r:any[])=>r[0].payload.id=randomUUID(),(r:any[])=>r[3].payload.internal_chat_message_metadata_passthrough.turn_id=randomUUID(),(r:any[])=>r[3].payload.output[0].text=JSON.stringify({...f.receipt,data:{...f.receipt.data,requestSha256:'0'.repeat(64)}})]){
+  const rows=withArguments(f,args);mutate(rows);assert.notEqual(proveCodexAction(rows,f.request,[launcher]).status,'verified');
+ }
+ assert.notEqual(proveCodexAction(withArguments(f,args),f.request,['C:/other/labus.cmd']).status,'verified');
+});
+test('dynamic or ambiguous JavaScript arguments cannot borrow an exact successful receipt',()=>{
+ const f=fixture(),cmd=JSON.stringify(f.command);
+ const invalid=[
+  '{cmd: command}', '{cmd: '+cmd+' + ""}', '{cmd: (()=>'+cmd+')()}',
+  '{["cmd"]: '+cmd+'}', '{get cmd(){return '+cmd+'}}', '{...options,cmd: '+cmd+'}',
+  '{cmd: '+cmd+', cmd: '+cmd+'}', '{cmd: '+cmd+', "cmd": '+cmd+'}',
+  '{cmd: '+cmd+', justification: sideEffect()}', '{cmd: '+cmd+', unknown: true}',
+  '{cmd: '+cmd+', /* ignored */ tty: false}', '{cmd: '+cmd+', tty: undefined}',
+  '{cmd: '+cmd+', max_output_tokens: Infinity}', '{cmd: '+cmd+', max_output_tokens: 1e999}',
+  '{cmd: '+cmd+', max_output_tokens: 0x10}', '{cmd: '+cmd+', justification: `text`}',
+  '{cmd: '+cmd+', justification: "bad\\x20escape"}', '{cmd: '+cmd+', justification: "bad\\\nline"}',
+  '{cmd: '+cmd+'}; other()', '{cmd: '+cmd+', __proto__: null}',
+ ];
+ for(const args of invalid)assert.notEqual(proveCodexAction(withArguments(f,args),f.request,[launcher]).status,'verified',args);
+});

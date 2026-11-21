@@ -67,6 +67,7 @@ export class LocalBus {
       if(input.from!==p.to)throw new Error('invalid_direction');if(this.binding(input.from).sessionId!==p.targetSessionId)throw new Error('source_session_mismatch');
       const family=all.filter(r=>r.message.taskId===p.taskId),root=family.find(r=>r.message.messageId===p.taskId);if(!root)throw new Error('missing_root');
       late=family.some(r=>r.stoppedAt||['stopped','expired'].includes(r.state))||Date.parse(root.message.expiresAt)<=+this.clock.now();
+      if(structuredInternal&&Date.parse(root.message.expiresAt)<=+this.clock.now())throw Error('collaboration_expired');
       if(input.kind==='reply'){
         if(p.kind==='reply')throw new Error('reply_to_reply');if(family.some(r=>r.message.kind==='reply'&&r.message.replyTo===p.messageId))throw new Error('already_replied');
         if(parent.attempts===0)throw new Error('task_not_submitted');
@@ -81,7 +82,7 @@ export class LocalBus {
     }
     const rootVersion=input.kind==='task'?(input.returnMode==='auto'?(structuredInternal?'clean-v1':this.newAutoWireVersion):'legacy'):(await this.store.get(m.taskId))!.message.schemaVersion===2?'clean-v1':'legacy';
     if(rootVersion==='clean-v1'){const sourceSessionId=this.binding(input.from).sessionId;if(input.kind!=='task'){const parent=(await this.store.get(input.replyTo!))!.message;if(parent.schemaVersion!==2)throw Error('wire_version_conflict');m.targetSessionId=parent.sourceSessionId;}m={...m,schemaVersion:2,wireVersion:'clean-v1',sourceSessionId};}
-    if(structuredInternal&&this.collaboration){const t=await this.collaboration.store.getTask(m.taskId);if(t)m.expiresAt=t.deadline;}
+    if(structuredInternal&&this.collaboration){const t=await this.collaboration.store.getTask(m.taskId);if(t){this.collaboration.guard(t);m.expiresAt=t.deadline;}}
     validateMessage(m);let {record}=await this.store.putNew(m);
     if(late){record={...record,late:true,state:'stopped',lastError:'late_reply_no_forward'};await this.update(record);}
     if(input.kind==='reply'&&!late){const parent=(await this.store.get(input.replyTo!))!;parent.state='completed';parent.resultRef=m.messageId;await this.update(parent);}

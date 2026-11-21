@@ -32,6 +32,27 @@ export const claude:AgentIntegration=Object.freeze<AgentIntegration>({
  executionIdField:'prompt_id',transcriptDirectory:'.claude/projects',sessionNamedTranscript:true,
  acceptsLifecycleAgentType:(value)=>!value||value==='claude',
  provePairInput:proveClaude,
+ async readSessionStatus(c,sessionId,now){
+  if(!idValid(sessionId))return;
+  try{
+   const dir=path.join(c.home,'.claude','sessions'),matches:{file:string;r:any}[]=[];
+   for(const name of await names(dir,2000,true)){
+    if(!/^\d+\.json$/.test(name))continue;
+    const file=await safePath(c.home,path.join(dir,name));let r:any;
+    try{r=JSON.parse(await boundedBytes(file));}catch{return;}
+    if(r.sessionId!==sessionId)continue;
+    if(!Number.isSafeInteger(r.pid)||r.pid<=0||name!==r.pid+'.json'||!path.isAbsolute(r.cwd||''))continue;
+    try{process.kill(r.pid,0);}catch{continue;}
+    matches.push({file,r});
+   }
+   if(matches.length!==1)return;const {file,r}=matches[0];
+   // updatedAt is the native endpoint heartbeat. Old status alone is insufficient.
+   const updated=typeof r.updatedAt==='number'?r.updatedAt:Date.parse(r.updatedAt);
+   const changed=typeof r.statusUpdatedAt==='number'?r.statusUpdatedAt:Date.parse(r.statusUpdatedAt);
+   if(r.status!=='waiting'||r.waitingFor!=='permission prompt'||!Number.isFinite(updated)||!Number.isFinite(changed)||changed>updated||updated>+now||+now-updated>30000)return;
+   return {provider:'claude',sessionId,status:'waiting_approval',scope:'session',taskAssociation:'unconfirmed',observedAt:now.toISOString(),updatedAt:new Date(updated).toISOString(),evidenceRef:file};
+  }catch{return;}
+ },
  async discover(c,sessionId){const provider='claude' as const,out:import('../installation/model.ts').Candidate[]=[];
 const dir=path.join(c.home,'.claude','sessions');for(const name of (await names(dir,2000,sessionId!==undefined)).filter(x=>/^\d+\.json$/.test(x))){try{const file=await safePath(c.home,path.join(dir,name)),r=JSON.parse(await boundedBytes(file));if(!idValid(r.sessionId)||sessionId!==undefined&&r.sessionId!==sessionId||r.pid+'.json'!==name||!Number.isInteger(r.pid)||!path.isAbsolute(r.cwd||''))continue;try{process.kill(r.pid,0);}catch{continue;}out.push({provider,sessionId:r.sessionId,workspaceRoot:r.cwd,...(typeof r.name==='string'?{title:r.name.slice(0,120)}:{}),...(typeof r.updatedAt==='string'?{lastActiveAt:r.updatedAt}:{}),availability:'live_endpoint'});}catch{}}return sessionId!==undefined?out:out.slice(0,20);
  },

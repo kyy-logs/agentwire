@@ -25,11 +25,46 @@ function receipt(output:any,r:ActionRequest):boolean{
  return output.split(/\r?\n/).some(line=>{try{return receipt(JSON.parse(line),r);}catch{return false;}});
 }
 function result(candidates:ActionEvidence[]):ActionEvidence{return candidates.length>1?{status:'conflict',errorCode:'multiple_native_executions'}:candidates[0]??{status:'pending'};}
+// Read only a flat literal argument object. Never evaluate transcript JavaScript.
+// JSON remains the preferred contract; this fallback recovers static native calls
+// using identifier keys or single quotes without accepting executable expressions.
+function staticArguments(source:string):Record<string,unknown>{
+ let i=0;
+ const out:Record<string,unknown>=Object.create(null);
+ const keys=new Set(['cmd','workdir','yield_time_ms','max_output_tokens','sandbox_permissions','justification','shell','login','tty']);
+ const fail=():never=>{throw Error('unsupported_native_arguments');};
+ const space=()=>{while(i<source.length&&/\s/.test(source[i]))i++;};
+ function string():string{
+  const quote=source[i++];let value='';
+  while(i<source.length){const c=source[i++];if(c===quote)return value;if(c.charCodeAt(0)<32)fail();
+   if(c!=='\\'){value+=c;continue;}
+   const escape=source[i++],simple:Record<string,string>={'\\':'\\',"'":"'",'"':'"','/':'/',b:'\b',f:'\f',n:'\n',r:'\r',t:'\t'};
+   if(Object.hasOwn(simple,escape)){value+=simple[escape];continue;}
+   if(escape!=='u'||! /^[0-9a-fA-F]{4}$/.test(source.slice(i,i+4)))fail();
+   value+=String.fromCharCode(parseInt(source.slice(i,i+4),16));i+=4;
+  }
+  return fail();
+ }
+ function scalar():unknown{
+  if(source[i]==='"'||source[i]==="'")return string();
+  const token=/^(?:true|false|null|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/.exec(source.slice(i));
+  if(!token)fail();i+=token[0].length;const value=JSON.parse(token[0]);if(typeof value==='number'&&!Number.isFinite(value))fail();return value;
+ }
+ space();if(source[i++]!=='{')fail();space();let count=0;
+ while(source[i]!=='}'){
+  if(++count>keys.size)fail();let key:string;
+  if(source[i]==='"'||source[i]==="'")key=string();
+  else{const token=/^[A-Za-z_$][A-Za-z0-9_$]*/.exec(source.slice(i));if(!token)fail();key=token[0];i+=key.length;}
+  if(!keys.has(key)||Object.hasOwn(out,key))fail();space();if(source[i++]!==':')fail();space();out[key]=scalar();space();
+  if(source[i]==='}')break;if(source[i++]!==',')fail();space();
+ }
+ if(source[i++]!=='}')fail();space();if(i!==source.length)fail();return out;
+}
 export function codexActionCalls(rows:any[],r:ActionRequest,launchers:string[]){
  return rows.map(x=>x.type==='response_item'?x.payload:x.payload??x).filter(call=>{
   if(call.type!==undefined&&call.type!=='custom_tool_call'||call.name!=='exec'||typeof call.input!=='string')return false;
   const m=/^text\(\(await tools\.exec_command\((\{[\s\S]*\})\)\)\.output\);?$/.exec(call.input.trim());if(!m)return false;
-  try{return matches(JSON.parse(m[1]).cmd,r,launchers);}catch{return false;}
+  try{let args;try{args=JSON.parse(m[1]);}catch{args=staticArguments(m[1]);}return matches(args.cmd,r,launchers);}catch{return false;}
  });
 }
 export function proveCodexAction(rows:any[],r:ActionRequest,launchers:string[]):ActionEvidence{
